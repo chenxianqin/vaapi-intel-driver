@@ -672,11 +672,15 @@ i965_media_h264_upload_constants(VADriverContextP ctx,
             /* FIXME: Need to upload CURBE data to inter kernel interface 
              * to support weighted prediction work-around 
              */
-            *(short *)constant_buffer = i965_h264_context->weight128_offset0;
-            constant_buffer += 2;
-            *(char *)constant_buffer = i965_h264_context->weight128_offset0_flag;
-            constant_buffer++;
-            *constant_buffer = 0;
+            if (0) {
+                *(short *)constant_buffer = i965_h264_context->weight128_offset0;
+                constant_buffer += 2;
+                *(char *)constant_buffer = i965_h264_context->weight128_offset0_flag;
+                constant_buffer++;
+                *constant_buffer = 0;
+            }
+            
+            memcpy(constant_buffer, intra_kernel_header, sizeof(*intra_kernel_header));
         }
     }
 
@@ -892,7 +896,11 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
     if (IS_IRONLAKE(i965->intel.device_id)) {
         media_context->urb.num_vfe_entries = 63;
     } else {
-        media_context->urb.num_vfe_entries = 23;
+        /* TODO when enable the sw_scoreboard 
+         * set the value back
+         * media_context->urb.num_vfe_entries = 23;
+         */
+        media_context->urb.num_vfe_entries = 1;
     }
 
     media_context->urb.size_vfe_entry = 16;

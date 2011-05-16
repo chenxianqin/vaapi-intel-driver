@@ -18,13 +18,13 @@
 #ifndef	COMBINED_KERNEL
 #ifdef DEV_CTG
   #define SW_SCOREBOARD		// SW Scoreboard should be enabled for CTG and earlier
+  #undef SW_SCOREBOARD
   #undef HW_SCOREBOARD		// HW Scoreboard should be disabled for CTG and earlier
 #else
   #define HW_SCOREBOARD		// HW Scoreboard should be enabled for ILK and beyond
   #undef SW_SCOREBOARD		// SW Scoreboard should be disabled for ILK and beyond
 #endif	// DEV_CTG
 #endif	// COMBINED_KERNEL
-
 //#define MONO				// Build Monochrome kernels
 
 //  Surface state definition

@@ -36,6 +36,7 @@
 
 #ifdef DEV_CTG
   #define SW_SCOREBOARD		// SW Scoreboard should be enabled for CTG and earlier
+  #undef SW_SCOREBOARD
   #undef HW_SCOREBOARD		// HW Scoreboard should be disabled for CTG and earlier
 #else
   #define HW_SCOREBOARD		// HW Scoreboard should be enabled for ILK and beyond

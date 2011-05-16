@@ -166,22 +166,38 @@ INTEL_ILDB_ASM = \
 	../ildb/writeURB_UV_Child.asm	\
 	../ildb/writeURB_Y_Child.asm
 
+INTEL_MC_GEN4_ASM = avc_mc.gen4.asm
 INTEL_MC_GEN5_ASM = avc_mc.gen5.asm
 
 TARGETS  =
 if HAVE_GEN4ASM
+TARGETS += $(INTEL_MC_G4B)
 TARGETS += $(INTEL_MC_G4B_GEN5)
 endif
 
 all-local: $(TARGETS)
 
-SUFFIXES = .g4a .g4b .gen5.asm
+SUFFIXES = .g4a .g4b .gen4.asm .gen5.asm
 
 .g4a.g4b:
 	m4 $*.g4a > $*.g4m			&& \
 	intel-gen4asm -o $@ $*.g4m		&& \
 	intel-gen4asm -g 5 -o $@.gen5 $*.g4m	&& \
 	rm $*.g4m
+
+$(INTEL_MC_GEN4_ASM): $(INTEL_MC_ASM) $(INTEL_MC_INC) $(INTEL_ILDB_ASM)
+	cpp -DDEV_CTG -DBOOTSTRAP -I ../ildb/ AllAVC.asm > _mc0.$@	&& \
+	../../gpp.py _mc0.$@ $@						&& \
+	intel-gen4asm -l list -a -e tmp.$(INTEL_MC_EXPORT) $@		   \
+		-o /dev/null						&& \
+	mv tmp.$(INTEL_MC_EXPORT) $(INTEL_MC_EXPORT)			&& \
+	cpp -DDEV_CTG -I ../ildb/ AllAVC.asm > _mc1.$@			&& \
+	../../gpp.py _mc1.$@ $@						&& \
+	rm _mc0.$@ _mc1.$@
+
+$(INTEL_MC_G4B): $(INTEL_MC_GEN4_ASM)
+	intel-gen4asm -l list -a -e tmp.$(INTEL_MC_EXPORT) $< -o $@	&& \
+	mv tmp.$(INTEL_MC_EXPORT) $(INTEL_MC_EXPORT)
 
 $(INTEL_MC_GEN5_ASM): $(INTEL_MC_ASM) $(INTEL_MC_INC) $(INTEL_ILDB_ASM)
 	cpp -DDEV_ILK -DBOOTSTRAP -I ../ildb/ AllAVC.asm > _mc0.$@	&& \
@@ -202,7 +218,7 @@ $(INTEL_MC_G4B_GEN5): $(INTEL_MC_GEN5_ASM)
 
 $(INTEL_G4B): $(INTEL_G4I)
 
-CLEANFILES = $(INTEL_MC_GEN5_ASM)
+CLEANFILES = $(INTEL_MC_GEN4_ASM) $(INTEL_MC_GEN5_ASM)
 
 EXTRA_DIST = \
 	$(INTEL_G4A)		\

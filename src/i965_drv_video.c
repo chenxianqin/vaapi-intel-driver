@@ -56,7 +56,8 @@
 
 #define HAS_H264(ctx)   ((IS_GEN7((ctx)->intel.device_id) ||            \
                           IS_GEN6((ctx)->intel.device_id) ||            \
-                          IS_IRONLAKE((ctx)->intel.device_id)) &&       \
+                          IS_IRONLAKE((ctx)->intel.device_id) ||        \
+                          IS_G4X((ctx)->intel.device_id)) &&            \
                          (ctx)->intel.has_bsd)
 
 #define HAS_VC1(ctx)    ((IS_GEN7((ctx)->intel.device_id) ||    \

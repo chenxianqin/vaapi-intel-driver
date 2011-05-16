@@ -35,7 +35,6 @@
 	mov	(1)	REG_WRITE_COMMIT_UV<1>:ud	REG_WRITE_COMMIT_UV<0;1,0>:ud		// Make sure U/V write is committed
 #endif	// INTER_KERNEL
 #endif	// BSDRESET_ENABLE
-
 	send (8)	NULLREG  MSGHDRY1	null:ud    MSG_GW	FWDMSGDSC
 
 // End of scoreboard_update
