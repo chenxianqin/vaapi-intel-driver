@@ -341,6 +341,9 @@ g4x_dec_hw_context_init(VADriverContextP ctx, VAProfile profile)
     case VAProfileH264Baseline:
     case VAProfileH264Main:
     case VAProfileH264High:
+        i965_media_h264_dec_context_init(ctx, media_context);
+        break;
+
     case VAProfileVC1Simple:
     case VAProfileVC1Main:
     case VAProfileVC1Advanced:
