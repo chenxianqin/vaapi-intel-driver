@@ -749,7 +749,7 @@ i965_avc_sw_scoreboard_objects(VADriverContextP ctx, struct i965_h264_context *i
 {
     struct intel_batchbuffer *batch = i965_h264_context->batch;
     int width_in_mb_minus_1 = i965_h264_context->picture.width_in_mbs - 1;
-    int height_in_mb_minus_1 = i965_h264_context->avc_it_command_mb_info.mbs / (width_in_mb_minus_1 + 1) - 1;
+    int height_in_mb_minus_1 = i965_h264_context->avc_it_command_mb_info.mbs / (width_in_mb_minus_1 + 1) / (1 + !!i965_h264_context->picture.mbaff_frame_flag) - 1;
     int total_mb = i965_h264_context->avc_it_command_mb_info.mbs;
     int kernel_index = i965_h264_context->picture.mbaff_frame_flag ? 17 : 16;
 
