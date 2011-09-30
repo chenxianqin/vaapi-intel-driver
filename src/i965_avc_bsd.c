@@ -713,7 +713,7 @@ g4x_avc_bsd_object(VADriverContextP ctx,
         OUT_BCS_BATCH(batch, CMD_AVC_BSD_OBJECT | (8 - 2));
         OUT_BCS_BATCH(batch, 0); /* indirect data length for phantom slice is 0 */
         OUT_BCS_BATCH(batch, 0); /* indirect data start address for phantom slice is 0 */
-        OUT_BCS_BATCH(batch, 0);
+        OUT_BCS_BATCH(batch, slice_index);
         OUT_BCS_BATCH(batch, 0);
         OUT_BCS_BATCH(batch, 0);
         OUT_BCS_BATCH(batch, width_in_mbs * height_in_mbs / (1 + !!pic_param->pic_fields.bits.field_pic_flag));
@@ -886,9 +886,10 @@ static void
 i965_avc_bsd_phantom_slice(VADriverContextP ctx, 
                            struct decode_state *decode_state,
                            VAPictureParameterBufferH264 *pic_param,
+                           int prev_slice_type,
                            struct i965_h264_context *i965_h264_context)
 {
-    i965_avc_bsd_object(ctx, decode_state, pic_param, NULL, 0, i965_h264_context);
+    i965_avc_bsd_object(ctx, decode_state, pic_param, NULL, prev_slice_type, i965_h264_context);
 }
 
 static void
@@ -1013,6 +1014,7 @@ i965_avc_bsd_pipeline(VADriverContextP ctx, struct decode_state *decode_state, v
     VAPictureParameterBufferH264 *pic_param;
     VASliceParameterBufferH264 *slice_param;
     int i, j;
+    int prev_slice_type = SLICE_TYPE_I;
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferH264 *)decode_state->pic_param->buffer;
@@ -1069,11 +1071,12 @@ i965_avc_bsd_pipeline(VADriverContextP ctx, struct decode_state *decode_state, v
             i965_avc_bsd_slice_state(ctx, pic_param, slice_param, i965_h264_context);
             i965_avc_bsd_buf_base_state(ctx, pic_param, slice_param, i965_h264_context);
             i965_avc_bsd_object(ctx, decode_state, pic_param, slice_param, j, i965_h264_context);
+            prev_slice_type = slice_param->slice_type;
             slice_param++;
         }
     }
 
-    i965_avc_bsd_phantom_slice(ctx, decode_state, pic_param, i965_h264_context);
+    i965_avc_bsd_phantom_slice(ctx, decode_state, pic_param, prev_slice_type, i965_h264_context);
     intel_batchbuffer_emit_mi_flush(batch);
     intel_batchbuffer_end_atomic(batch);
     intel_batchbuffer_flush(batch);
