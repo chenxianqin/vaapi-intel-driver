@@ -356,9 +356,6 @@ i965_avc_bsd_slice_state(VADriverContextP ctx,
     i965_h264_context->weight128_chroma_l0 = 0;
     i965_h264_context->weight128_chroma_l1 = 0;
 
-    i965_h264_context->weight128_offset0_flag = 0;
-    i965_h264_context->weight128_offset0 = 0;
-
     if (present_flag & PRESENT_WEIGHT_OFFSET_L0) {
         for (j = 0; j < 32; j++) {
             weightoffsets[j * 6 + 0] = slice_param->luma_offset_l0[j];
@@ -378,11 +375,17 @@ i965_avc_bsd_slice_state(VADriverContextP ctx,
                         slice_param->chroma_weight_l0[j][1] == 128)
                         i965_h264_context->weight128_chroma_l0 |= (1 << j);
                 } else {
-                    /* FIXME: workaround for weight 128 */
-                    if (slice_param->luma_weight_l0[j] == 128 ||
-                        slice_param->chroma_weight_l0[j][0] == 128 ||
-                        slice_param->chroma_weight_l0[j][1] == 128)
-                        i965_h264_context->weight128_offset0_flag = 1;
+                    if (slice_param->luma_weight_l0[j] == 128) {
+                        weightoffsets[j * 6 + 1] = i965_h264_context->weight128_offset0;
+                    }
+
+                    if (slice_param->chroma_weight_l0[j][0] == 128) {
+                        weightoffsets[j * 6 + 3] = i965_h264_context->weight128_offset0;
+                    }
+
+                    if (slice_param->chroma_weight_l0[j][1] == 128) {
+                        weightoffsets[j * 6 + 5] = i965_h264_context->weight128_offset0;
+                    }
                 }
             }
         }
@@ -408,10 +411,17 @@ i965_avc_bsd_slice_state(VADriverContextP ctx,
                         slice_param->chroma_weight_l1[j][1] == 128)
                         i965_h264_context->weight128_chroma_l1 |= (1 << j);
                 } else {
-                    if (slice_param->luma_weight_l0[j] == 128 ||
-                        slice_param->chroma_weight_l0[j][0] == 128 ||
-                        slice_param->chroma_weight_l0[j][1] == 128)
-                        i965_h264_context->weight128_offset0_flag = 1;
+                    if (slice_param->luma_weight_l1[j] == 128) {
+                        weightoffsets[j * 6 + 1] = i965_h264_context->weight128_offset0;
+                    }
+
+                    if (slice_param->chroma_weight_l1[j][0] == 128) {
+                        weightoffsets[j * 6 + 3] = i965_h264_context->weight128_offset0;
+                    }
+
+                    if (slice_param->chroma_weight_l1[j][1] == 128) {
+                        weightoffsets[j * 6 + 5] = i965_h264_context->weight128_offset0;
+                    }
                 }
             }
         }
@@ -1006,6 +1016,117 @@ i965_avc_bsd_frame_store_index(VADriverContextP ctx,
     }
 }
 
+static int
+i965_list_find_weight(short *list, int size, short value)
+{
+    int i;
+
+    for (i = 0; i < size; i++) {
+        if (list[i] == value)
+            return 1;
+    }
+
+    return 0;
+}
+
+static void
+i965_weight128_workaround(VADriverContextP ctx, struct decode_state *decode_state, void *h264_context)
+{
+    struct i965_h264_context *i965_h264_context = (struct i965_h264_context *)h264_context;
+    VAPictureParameterBufferH264 *pic_param;
+    VASliceParameterBufferH264 *slice_param;
+    short weight128_offset0 = 0;
+    int i, j;
+
+    i965_h264_context->weight128_offset0_flag = 0;
+    i965_h264_context->weight128_offset0 = 0;
+
+    if (i965_h264_context->use_hw_w128)
+        return;
+
+    assert(decode_state->pic_param && decode_state->pic_param->buffer);
+    pic_param = (VAPictureParameterBufferH264 *)decode_state->pic_param->buffer;
+    i965_avc_bsd_frame_store_index(ctx, pic_param, i965_h264_context);
+
+    for (j = 0; j < decode_state->num_slice_params; j++) {
+        assert(decode_state->slice_params && decode_state->slice_params[j]->buffer);
+        slice_param = (VASliceParameterBufferH264 *)decode_state->slice_params[j]->buffer;
+
+        for (i = 0; i < decode_state->slice_params[j]->num_elements; i++) {
+
+            if ((slice_param->slice_type == SLICE_TYPE_P ||
+                 slice_param->slice_type == SLICE_TYPE_SP) && 
+                (pic_param->pic_fields.bits.weighted_pred_flag == 1)) {
+                i965_h264_context->weight128_offset0_flag = 
+                    i965_list_find_weight(&slice_param->luma_weight_l0[0], 32, 128) ||
+                    i965_list_find_weight(&slice_param->chroma_weight_l0[0][0], 64, 128);
+            }
+
+            if ((slice_param->slice_type == SLICE_TYPE_B) &&
+                (pic_param->pic_fields.bits.weighted_bipred_idc == 1)) {
+                i965_h264_context->weight128_offset0_flag = 
+                    i965_list_find_weight(&slice_param->luma_weight_l0[0], 32, 128) ||
+                    i965_list_find_weight(&slice_param->chroma_weight_l0[0][0], 64, 128) ||
+                    i965_list_find_weight(&slice_param->luma_weight_l1[0], 32, 128) ||
+                    i965_list_find_weight(&slice_param->chroma_weight_l1[0][0], 64, 128);
+            }
+
+            if (i965_h264_context->weight128_offset0_flag)
+                break;
+
+            slice_param++;
+        }
+
+        if (i965_h264_context->weight128_offset0_flag)
+            break;
+    }
+
+    if (!i965_h264_context->weight128_offset0_flag)
+        return;
+
+    for (weight128_offset0 = 0; weight128_offset0 < 128; weight128_offset0++) {
+        int bfound = 0;
+
+        for (j = 0; j < decode_state->num_slice_params; j++) {
+            assert(decode_state->slice_params && decode_state->slice_params[j]->buffer);
+            slice_param = (VASliceParameterBufferH264 *)decode_state->slice_params[j]->buffer;
+
+            for (i = 0; i < decode_state->slice_params[j]->num_elements; i++) {
+
+                if ((slice_param->slice_type == SLICE_TYPE_P ||
+                     slice_param->slice_type == SLICE_TYPE_SP) && 
+                    (pic_param->pic_fields.bits.weighted_pred_flag == 1)) {
+                    bfound = 
+                        i965_list_find_weight(&slice_param->luma_weight_l0[0], 32, weight128_offset0) ||
+                        i965_list_find_weight(&slice_param->chroma_weight_l0[0][0], 64, weight128_offset0);
+                }
+
+                if ((slice_param->slice_type == SLICE_TYPE_B) &&
+                    (pic_param->pic_fields.bits.weighted_bipred_idc == 1)) {
+                    bfound = 
+                        i965_list_find_weight(&slice_param->luma_weight_l0[0], 32, weight128_offset0) ||
+                        i965_list_find_weight(&slice_param->chroma_weight_l0[0][0], 64, weight128_offset0) ||
+                        i965_list_find_weight(&slice_param->luma_weight_l1[0], 32, weight128_offset0) ||
+                        i965_list_find_weight(&slice_param->chroma_weight_l1[0][0], 64, weight128_offset0);
+                }
+
+                if (bfound)
+                    break;
+
+                slice_param++;
+            }
+
+            if (bfound)
+                break;
+        }
+
+        if (!bfound) {
+            i965_h264_context->weight128_offset0 = weight128_offset0;
+            break;
+        }
+    }
+}
+
 void 
 i965_avc_bsd_pipeline(VADriverContextP ctx, struct decode_state *decode_state, void *h264_context)
 {
@@ -1019,6 +1140,7 @@ i965_avc_bsd_pipeline(VADriverContextP ctx, struct decode_state *decode_state, v
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferH264 *)decode_state->pic_param->buffer;
     i965_avc_bsd_frame_store_index(ctx, pic_param, i965_h264_context);
+    i965_weight128_workaround(ctx,decode_state, h264_context);
 
     i965_h264_context->enable_avc_ildb = 0;
     i965_h264_context->picture.i_flag = 1;

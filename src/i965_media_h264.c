@@ -467,7 +467,7 @@ i965_media_h264_interface_descriptor_remap_table(VADriverContextP ctx, struct i9
         memset(desc, 0, sizeof(*desc));
         desc->desc0.grf_reg_blocks = 7; 
         desc->desc0.kernel_start_pointer = (i965_h264_context->avc_kernels[H264_AVC_COMBINED].bo->offset + kernel_offset) >> 6; /* reloc */
-        desc->desc1.const_urb_entry_read_offset = 0;
+        desc->desc1.const_urb_entry_read_offset = (i < FRAMEMB_MOTION) ? 0 : 2;
         desc->desc1.const_urb_entry_read_len = 2;
         desc->desc3.binding_table_entry_count = 0;
         desc->desc3.binding_table_pointer = 
@@ -695,27 +695,19 @@ i965_media_h264_upload_constants(VADriverContextP ctx,
     assert(media_context->curbe.bo->virtual);
     constant_buffer = media_context->curbe.bo->virtual;
 
-    /* HW solution for W=128 */
-    if (i965_h264_context->use_hw_w128) {
-        memcpy(constant_buffer, intra_kernel_header, sizeof(*intra_kernel_header));
-    } else {
-        if (slice_param->slice_type == SLICE_TYPE_I ||
-            slice_param->slice_type == SLICE_TYPE_SI) {
-            memcpy(constant_buffer, intra_kernel_header, sizeof(*intra_kernel_header));
-        } else {
-            /* FIXME: Need to upload CURBE data to inter kernel interface 
-             * to support weighted prediction work-around 
-             */
-            if (0) {
-                *(short *)constant_buffer = i965_h264_context->weight128_offset0;
-                constant_buffer += 2;
-                *(char *)constant_buffer = i965_h264_context->weight128_offset0_flag;
-                constant_buffer++;
-                *constant_buffer = 0;
-            }
-            
-            memcpy(constant_buffer, intra_kernel_header, sizeof(*intra_kernel_header));
-        }
+    /* constant (64 bytes) for Intra kernel */
+    memcpy(constant_buffer, intra_kernel_header, sizeof(*intra_kernel_header));
+
+    /* constant (64 bytes) for Inter kernel */
+    if (!i965_h264_context->use_hw_w128) {
+        struct inter_kernel_header inter_header;
+        
+        inter_header.weight_offset = i965_h264_context->weight128_offset0;
+        inter_header.weight_offset_flag = !i965_h264_context->weight128_offset0_flag;
+        inter_header.pad0 = 0;
+
+        constant_buffer += 64;
+        memcpy(constant_buffer, &inter_header, sizeof(inter_header));
     }
 
     dri_bo_unmap(media_context->curbe.bo);
@@ -973,7 +965,7 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
     media_context->urb.size_vfe_entry = 16;
 
     media_context->urb.num_cs_entries = 1;
-    media_context->urb.size_cs_entry = 1;
+    media_context->urb.size_cs_entry = 2;
 
     media_context->urb.vfe_start = 0;
     media_context->urb.cs_start = media_context->urb.vfe_start + 
