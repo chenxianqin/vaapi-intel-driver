@@ -153,6 +153,12 @@ struct intra_kernel_header intra_kernel_header_gen4 = {
     (intra_Pred_4x4_Y_IP - ADD_ERROR_SB0_IP)
 };
 
+/* software scoreboad kernel entry */
+static unsigned long avc_sw_scoreboard_kernel_offset[] = {
+    SCOREBOARD_IP * INST_UNIT_GEN4,
+    SCOREBOARD_MBAFF_IP * INST_UNIT_GEN4
+};
+
 static const uint32_t h264_avc_combined_gen4[][4] = {
 #include "shaders/h264/mc/avc_mc.g4b"
 };
@@ -481,6 +487,33 @@ i965_media_h264_interface_descriptor_remap_table(VADriverContextP ctx, struct i9
         desc++;
     }
 
+    if (!i965_h264_context->use_avc_hw_scoreboard) {
+        /* Index [0-15] goes through the Interface Descriptor Remap Table
+         * so don't use it for sotfware scoreboard kernel
+         */
+        for (; i < 16; i++) {
+            desc++;
+        }
+
+        for (; i < 18; i++) {
+            int kernel_offset = avc_sw_scoreboard_kernel_offset[i - 16];
+            memset(desc, 0, sizeof(*desc));
+            desc->desc0.grf_reg_blocks = 15;
+            desc->desc0.kernel_start_pointer = (i965_h264_context->avc_kernels[H264_AVC_COMBINED].bo->offset + kernel_offset) >> 6; /* reloc */
+            desc->desc1.const_urb_entry_read_offset = 0;
+            desc->desc1.const_urb_entry_read_len = 0;
+            desc->desc3.binding_table_entry_count = 0;
+            desc->desc3.binding_table_pointer = 0;
+
+            dri_bo_emit_reloc(bo,
+                              I915_GEM_DOMAIN_INSTRUCTION, 0,
+                              desc->desc0.grf_reg_blocks + kernel_offset,
+                              i * sizeof(*desc) + offsetof(struct i965_interface_descriptor, desc0),
+                              i965_h264_context->avc_kernels[H264_AVC_COMBINED].bo);
+            desc++;
+        }
+    }
+
     dri_bo_unmap(bo);
 }
 
@@ -501,6 +534,7 @@ i965_media_h264_vfe_state(VADriverContextP ctx, struct i965_media_context *media
     vfe_state->vfe1.num_urb_entries = media_context->urb.num_vfe_entries;
     vfe_state->vfe1.vfe_mode = VFE_AVC_IT_MODE;
     vfe_state->vfe1.children_present = 0;
+    vfe_state->vfe1.debug_counter_control = 2;  /* for software scoreboard kernel */
     vfe_state->vfe2.interface_descriptor_base = 
         media_context->idrt.bo->offset >> 4; /* reloc */
     dri_bo_emit_reloc(bo,
@@ -711,6 +745,39 @@ i965_media_h264_states_setup(VADriverContextP ctx,
 }
 
 static void
+i965_avc_sw_scoreboard_objects(VADriverContextP ctx, struct i965_h264_context *i965_h264_context)
+{
+    struct intel_batchbuffer *batch = i965_h264_context->batch;
+    int width_in_mb_minus_1 = i965_h264_context->picture.width_in_mbs - 1;
+    int height_in_mb_minus_1 = i965_h264_context->avc_it_command_mb_info.mbs / (width_in_mb_minus_1 + 1) - 1;
+    int total_mb = i965_h264_context->avc_it_command_mb_info.mbs;
+    int kernel_index = i965_h264_context->picture.mbaff_frame_flag ? 17 : 16;
+
+    BEGIN_BATCH(batch, 16);
+    OUT_BATCH(batch, CMD_MEDIA_OBJECT_PRT | (16 - 2));
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch,
+              ((kernel_index << 24) |   /* Interface Descriptor Offset. */
+               (1 << 23)));             /* PRT_Fence Needed */
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch,
+              ((height_in_mb_minus_1 << 16) |
+               (width_in_mb_minus_1)));
+    OUT_BATCH(batch, total_mb); 
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    OUT_BATCH(batch, 0);
+    ADVANCE_BATCH(batch);
+}
+
+static void
 i965_media_h264_objects(VADriverContextP ctx,
                         struct decode_state *decode_state,
                         struct i965_media_context *media_context)
@@ -721,6 +788,10 @@ i965_media_h264_objects(VADriverContextP ctx,
 
     assert(media_context->private_context);
     i965_h264_context = (struct i965_h264_context *)media_context->private_context;
+
+    /* issue OBJECT command for software scoreboard befere MC kernels */
+    if (!i965_h264_context->use_avc_hw_scoreboard)
+        i965_avc_sw_scoreboard_objects(ctx, i965_h264_context);
 
     dri_bo_map(i965_h264_context->avc_it_command_mb_info.bo, True);
     assert(i965_h264_context->avc_it_command_mb_info.bo->virtual);
@@ -896,11 +967,7 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
     if (IS_IRONLAKE(i965->intel.device_id)) {
         media_context->urb.num_vfe_entries = 63;
     } else {
-        /* TODO when enable the sw_scoreboard 
-         * set the value back
-         * media_context->urb.num_vfe_entries = 23;
-         */
-        media_context->urb.num_vfe_entries = 1;
+        media_context->urb.num_vfe_entries = 23;
     }
 
     media_context->urb.size_vfe_entry = 16;
