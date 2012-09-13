@@ -315,6 +315,11 @@
 
 #define MFD_VC1_BSD_OBJECT                      MFX(2, 2, 1, 8)
 
+#define MFX_JPEG_PIC_STATE                      MFX(2, 7, 0, 0)
+#define MFX_JPEG_HUFF_TABLE_STATE               MFX(2, 7, 0, 2)
+
+#define MFD_JPEG_BSD_OBJECT                     MFX(2, 7, 1, 8)
+
 #define I965_DEPTHFORMAT_D32_FLOAT              1
 
 #define BASE_ADDRESS_MODIFY             (1 << 0)
@@ -690,16 +695,33 @@
 #define MFX_QM_JPEG_LUMA_Y_QUANTIZER_MATRIX     0
 #define MFX_QM_JPEG_CHROMA_CB_QUANTIZER_MATRIX  1
 #define MFX_QM_JPEG_CHROMA_CR_QUANTIZER_MATRIX  2
+#define MFX_QM_JPEG_ALPHA_QUANTIZER_MATRIX      3 /* for new device */
+
+#define MFX_HUFFTABLE_ID_Y                      0
+#define MFX_HUFFTABLE_ID_UV                     1 /* UV on Ivybridge */
 
 #define MFD_MODE_VLD            0
 #define MFD_MODE_IT             1
 
 #define MFX_SURFACE_PLANAR_420_8        4
+#define MFX_SURFACE_PLANAR_411_8        5
+#define MFX_SURFACE_PLANAR_422_8        6
 #define MFX_SURFACE_MONOCHROME          12
+
+#define MPEG_I_PICTURE          1
+#define MPEG_P_PICTURE          2
+#define MPEG_B_PICTURE          3
 
 #define MPEG_TOP_FIELD		1
 #define MPEG_BOTTOM_FIELD	2
 #define MPEG_FRAME		3
+
+#define SUBSAMPLE_YUV400        0
+#define SUBSAMPLE_YUV420        1
+#define SUBSAMPLE_YUV422H       2
+#define SUBSAMPLE_YUV422V       3
+#define SUBSAMPLE_YUV444        4
+#define SUBSAMPLE_YUV411        5
 
 #define URB_SIZE(intel)         (IS_GEN7(intel->device_id) ? 4096 :     \
                                  IS_GEN6(intel->device_id) ? 1024 :     \

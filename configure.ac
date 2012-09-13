@@ -1,8 +1,8 @@
 # intel-driver package version number
 m4_define([intel_driver_major_version], [1])
 m4_define([intel_driver_minor_version], [0])
-m4_define([intel_driver_micro_version], [14])
-m4_define([intel_driver_pre_version],   [0])
+m4_define([intel_driver_micro_version], [19])
+m4_define([intel_driver_pre_version],   [1])
 m4_define([intel_driver_version],
           [intel_driver_major_version.intel_driver_minor_version.intel_driver_micro_version])
 m4_if(intel_driver_pre_version, [0], [], [
@@ -10,7 +10,8 @@ m4_append([intel_driver_version], intel_driver_pre_version, [.pre])
 ])
 
 # libva minimum version requirement
-m4_define([libva_package_version], [1.0.14])
+m4_define([libva_package_version], [1.0.16])
+m4_define([vaapi_version], [0.32.1])
 
 # libdrm minimum version requirement
 m4_define([libdrm_version], [2.4.23])
@@ -19,7 +20,7 @@ AC_PREREQ([2.57])
 AC_INIT([intel_driver], [intel_driver_version], [haihao.xiang@intel.com],
         [libva-driver-intel])
 AC_CONFIG_SRCDIR([Makefile.am])
-AM_INIT_AUTOMAKE
+AM_INIT_AUTOMAKE([1.9 tar-ustar])
 
 AM_CONFIG_HEADER([src/config.h])
 
@@ -60,10 +61,13 @@ AC_SUBST(LIBDRM_VERSION)
 dnl Check for gen4asm
 PKG_CHECK_MODULES(GEN4ASM, [intel-gen4asm >= 1.2], [gen4asm=yes], [gen4asm=no])
 AM_CONDITIONAL(HAVE_GEN4ASM, test x$gen4asm = xyes)
+AC_PATH_PROG([GEN4ASM], [intel-gen4asm])
 
 dnl Check for VA-API
-PKG_CHECK_MODULES(LIBVA_DEPS,	  [libva])
+VAAPI_VERSION=vaapi_version
+PKG_CHECK_MODULES(LIBVA_DEPS,	  [libva >= $VAAPI_VERSION])
 PKG_CHECK_MODULES(LIBVA_X11_DEPS, [libva-x11])
+AC_SUBST(VAAPI_VERSION)
 
 VA_VERSION=`$PKG_CONFIG --modversion libva`
 VA_MAJOR_VERSION=`echo "$VA_VERSION" | cut -d'.' -f1`

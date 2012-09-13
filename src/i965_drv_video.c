@@ -72,6 +72,9 @@
                                   IS_GEN6((ctx)->intel.device_id)) &&   \
                                  (ctx)->intel.has_bsd)
 
+#define HAS_JPEG(ctx)   (IS_GEN7((ctx)->intel.device_id) &&     \
+                         (ctx)->intel.has_bsd)
+
 enum {
     I965_SURFACETYPE_RGBA = 1,
     I965_SURFACETYPE_YUV,
@@ -142,12 +145,16 @@ extern struct hw_context *g4x_dec_hw_context_init(VADriverContextP, VAProfile);
 static struct hw_codec_info g4x_hw_codec_info = {
     .dec_hw_context_init = g4x_dec_hw_context_init,
     .enc_hw_context_init = NULL,
+    .max_width = 2048,
+    .max_height = 2048,
 };
 
 extern struct hw_context *ironlake_dec_hw_context_init(VADriverContextP, VAProfile);
 static struct hw_codec_info ironlake_hw_codec_info = {
     .dec_hw_context_init = ironlake_dec_hw_context_init,
     .enc_hw_context_init = NULL,
+    .max_width = 2048,
+    .max_height = 2048,
 };
 
 extern struct hw_context *gen6_dec_hw_context_init(VADriverContextP, VAProfile);
@@ -155,12 +162,16 @@ extern struct hw_context *gen6_enc_hw_context_init(VADriverContextP, VAProfile);
 static struct hw_codec_info gen6_hw_codec_info = {
     .dec_hw_context_init = gen6_dec_hw_context_init,
     .enc_hw_context_init = gen6_enc_hw_context_init,
+    .max_width = 2048,
+    .max_height = 2048,
 };
 
 extern struct hw_context *gen7_dec_hw_context_init(VADriverContextP, VAProfile);
 static struct hw_codec_info gen7_hw_codec_info = {
     .dec_hw_context_init = gen7_dec_hw_context_init,
     .enc_hw_context_init = gen6_enc_hw_context_init,
+    .max_width = 4096,
+    .max_height = 4096,
 };
 
 VAStatus 
@@ -186,6 +197,10 @@ i965_QueryConfigProfiles(VADriverContextP ctx,
         profile_list[i++] = VAProfileVC1Simple;
         profile_list[i++] = VAProfileVC1Main;
         profile_list[i++] = VAProfileVC1Advanced;
+    }
+
+    if (HAS_JPEG(i965)) {
+        profile_list[i++] = VAProfileJPEGBaseline;
     }
 
     /* If the assert fails then I965_MAX_PROFILES needs to be bigger */
@@ -226,6 +241,11 @@ i965_QueryConfigEntrypoints(VADriverContextP ctx,
     case VAProfileVC1Main:
     case VAProfileVC1Advanced:
         if (HAS_VC1(i965))
+            entrypoint_list[n++] = VAEntrypointVLD;
+        break;
+
+    case VAProfileJPEGBaseline:
+        if (HAS_JPEG(i965))
             entrypoint_list[n++] = VAEntrypointVLD;
         break;
 
@@ -342,6 +362,15 @@ i965_CreateConfig(VADriverContextP ctx,
     case VAProfileVC1Main:
     case VAProfileVC1Advanced:
         if (HAS_VC1(i965) && VAEntrypointVLD == entrypoint) {
+            vaStatus = VA_STATUS_SUCCESS;
+        } else {
+            vaStatus = VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
+        }
+
+        break;
+
+    case VAProfileJPEGBaseline:
+        if (HAS_JPEG(i965) && VAEntrypointVLD == entrypoint) {
             vaStatus = VA_STATUS_SUCCESS;
         } else {
             vaStatus = VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
@@ -478,22 +507,15 @@ i965_CreateSurfaces(VADriverContextP ctx,
         obj_surface->orig_width = width;
         obj_surface->orig_height = height;
 
-        if (IS_GEN6(i965->intel.device_id) ||
-            IS_GEN7(i965->intel.device_id)) {
-            obj_surface->width = ALIGN(obj_surface->orig_width, 128);
-            obj_surface->height = ALIGN(obj_surface->orig_height, 32);
-        } else {
-            obj_surface->width = ALIGN(obj_surface->orig_width, 16);
-            obj_surface->height = ALIGN(obj_surface->orig_height, 16);
-        }
-
-        obj_surface->size = SIZE_YUV420(obj_surface->width, obj_surface->height);
+        obj_surface->width = ALIGN(width, 16);
+        obj_surface->height = ALIGN(height, 16);
         obj_surface->flags = SURFACE_REFERENCED;
         obj_surface->fourcc = 0;
         obj_surface->bo = NULL;
         obj_surface->locked_image_id = VA_INVALID_ID;
         obj_surface->private_data = NULL;
         obj_surface->free_private_data = NULL;
+        obj_surface->subsampling = SUBSAMPLE_YUV420;
     }
 
     /* Error recovery */
@@ -772,25 +794,30 @@ i965_destroy_context(struct object_heap *heap, struct object_base *obj)
     }
 
     if (obj_context->codec_type == CODEC_ENC) {
-        assert(obj_context->codec_state.enc.num_slice_params <= obj_context->codec_state.enc.max_slice_params);
-        i965_release_buffer_store(&obj_context->codec_state.enc.pic_param);
-        i965_release_buffer_store(&obj_context->codec_state.enc.seq_param);
+        assert(obj_context->codec_state.encode.num_slice_params <= obj_context->codec_state.encode.max_slice_params);
+        i965_release_buffer_store(&obj_context->codec_state.encode.pic_param);
+        i965_release_buffer_store(&obj_context->codec_state.encode.seq_param);
+
+        for (i = 0; i < obj_context->codec_state.encode.num_slice_params; i++)
+            i965_release_buffer_store(&obj_context->codec_state.encode.slice_params[i]);
+
+        free(obj_context->codec_state.encode.slice_params);
     } else {
-        assert(obj_context->codec_state.dec.num_slice_params <= obj_context->codec_state.dec.max_slice_params);
-        assert(obj_context->codec_state.dec.num_slice_datas <= obj_context->codec_state.dec.max_slice_datas);
+        assert(obj_context->codec_state.decode.num_slice_params <= obj_context->codec_state.decode.max_slice_params);
+        assert(obj_context->codec_state.decode.num_slice_datas <= obj_context->codec_state.decode.max_slice_datas);
 
-        i965_release_buffer_store(&obj_context->codec_state.dec.pic_param);
-        i965_release_buffer_store(&obj_context->codec_state.dec.iq_matrix);
-        i965_release_buffer_store(&obj_context->codec_state.dec.bit_plane);
+        i965_release_buffer_store(&obj_context->codec_state.decode.pic_param);
+        i965_release_buffer_store(&obj_context->codec_state.decode.iq_matrix);
+        i965_release_buffer_store(&obj_context->codec_state.decode.bit_plane);
 
-        for (i = 0; i < obj_context->codec_state.dec.num_slice_params; i++)
-            i965_release_buffer_store(&obj_context->codec_state.dec.slice_params[i]);
+        for (i = 0; i < obj_context->codec_state.decode.num_slice_params; i++)
+            i965_release_buffer_store(&obj_context->codec_state.decode.slice_params[i]);
 
-        for (i = 0; i < obj_context->codec_state.dec.num_slice_datas; i++)
-            i965_release_buffer_store(&obj_context->codec_state.dec.slice_datas[i]);
+        for (i = 0; i < obj_context->codec_state.decode.num_slice_datas; i++)
+            i965_release_buffer_store(&obj_context->codec_state.decode.slice_datas[i]);
 
-        free(obj_context->codec_state.dec.slice_params);
-        free(obj_context->codec_state.dec.slice_datas);
+        free(obj_context->codec_state.decode.slice_params);
+        free(obj_context->codec_state.decode.slice_datas);
     }
 
     free(obj_context->render_targets);
@@ -817,6 +844,12 @@ i965_CreateContext(VADriverContextP ctx,
 
     if (NULL == obj_config) {
         vaStatus = VA_STATUS_ERROR_INVALID_CONFIG;
+        return vaStatus;
+    }
+
+    if (picture_width > i965->codec_info->max_width ||
+        picture_height > i965->codec_info->max_height) {
+        vaStatus = VA_STATUS_ERROR_RESOLUTION_NOT_SUPPORTED;
         return vaStatus;
     }
 
@@ -868,23 +901,23 @@ i965_CreateContext(VADriverContextP ctx,
     if (VA_STATUS_SUCCESS == vaStatus) {
         if (VAEntrypointEncSlice == obj_config->entrypoint ) { /*encode routin only*/
             obj_context->codec_type = CODEC_ENC;
-            memset(&obj_context->codec_state.enc, 0, sizeof(obj_context->codec_state.enc));
-            obj_context->codec_state.enc.current_render_target = VA_INVALID_ID;
-            obj_context->codec_state.enc.max_slice_params = NUM_SLICES;
-            obj_context->codec_state.enc.slice_params = calloc(obj_context->codec_state.enc.max_slice_params,
-                                                               sizeof(*obj_context->codec_state.enc.slice_params));
+            memset(&obj_context->codec_state.encode, 0, sizeof(obj_context->codec_state.encode));
+            obj_context->codec_state.encode.current_render_target = VA_INVALID_ID;
+            obj_context->codec_state.encode.max_slice_params = NUM_SLICES;
+            obj_context->codec_state.encode.slice_params = calloc(obj_context->codec_state.encode.max_slice_params,
+                                                               sizeof(*obj_context->codec_state.encode.slice_params));
             assert(i965->codec_info->enc_hw_context_init);
             obj_context->hw_context = i965->codec_info->enc_hw_context_init(ctx, obj_config->profile);
         } else {
             obj_context->codec_type = CODEC_DEC;
-            memset(&obj_context->codec_state.dec, 0, sizeof(obj_context->codec_state.dec));
-            obj_context->codec_state.dec.current_render_target = -1;
-            obj_context->codec_state.dec.max_slice_params = NUM_SLICES;
-            obj_context->codec_state.dec.max_slice_datas = NUM_SLICES;
-            obj_context->codec_state.dec.slice_params = calloc(obj_context->codec_state.dec.max_slice_params,
-                                                               sizeof(*obj_context->codec_state.dec.slice_params));
-            obj_context->codec_state.dec.slice_datas = calloc(obj_context->codec_state.dec.max_slice_datas,
-                                                              sizeof(*obj_context->codec_state.dec.slice_datas));
+            memset(&obj_context->codec_state.decode, 0, sizeof(obj_context->codec_state.decode));
+            obj_context->codec_state.decode.current_render_target = -1;
+            obj_context->codec_state.decode.max_slice_params = NUM_SLICES;
+            obj_context->codec_state.decode.max_slice_datas = NUM_SLICES;
+            obj_context->codec_state.decode.slice_params = calloc(obj_context->codec_state.decode.max_slice_params,
+                                                               sizeof(*obj_context->codec_state.decode.slice_params));
+            obj_context->codec_state.decode.slice_datas = calloc(obj_context->codec_state.decode.max_slice_datas,
+                                                              sizeof(*obj_context->codec_state.decode.slice_datas));
 
             assert(i965->codec_info->dec_hw_context_init);
             obj_context->hw_context = i965->codec_info->dec_hw_context_init(ctx, obj_config->profile);
@@ -952,6 +985,7 @@ i965_create_buffer_internal(VADriverContextP ctx,
     case VAEncSequenceParameterBufferType:
     case VAEncPictureParameterBufferType:
     case VAEncSliceParameterBufferType:
+    case VAHuffmanTableBufferType:
         /* Ok */
         break;
 
@@ -1151,6 +1185,7 @@ i965_BeginPicture(VADriverContextP ctx,
     struct object_config *obj_config;
     VAContextID config;
     VAStatus vaStatus;
+    int i;
 
     assert(obj_context);
     assert(obj_surface);
@@ -1177,107 +1212,90 @@ i965_BeginPicture(VADriverContextP ctx,
         vaStatus = VA_STATUS_SUCCESS;
         break;
 
+    case VAProfileJPEGBaseline:
+        vaStatus = VA_STATUS_SUCCESS;
+        break;
+
     default:
         assert(0);
         vaStatus = VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
         break;
     }
 
-    if (obj_context->codec_type == CODEC_ENC)
-        obj_context->codec_state.enc.current_render_target = render_target;     /*This is input new frame*/
-    else
-        obj_context->codec_state.dec.current_render_target = render_target;
+    if (obj_context->codec_type == CODEC_ENC) {
+        i965_release_buffer_store(&obj_context->codec_state.encode.pic_param);
+        i965_release_buffer_store(&obj_context->codec_state.encode.seq_param);
+
+        for (i = 0; i < obj_context->codec_state.encode.num_slice_params; i++) {
+            i965_release_buffer_store(&obj_context->codec_state.encode.slice_params[i]);
+        }
+
+        obj_context->codec_state.encode.num_slice_params = 0;
+        obj_context->codec_state.encode.current_render_target = render_target;     /*This is input new frame*/
+    } else {
+        obj_context->codec_state.decode.current_render_target = render_target;
+        i965_release_buffer_store(&obj_context->codec_state.decode.pic_param);
+        i965_release_buffer_store(&obj_context->codec_state.decode.iq_matrix);
+        i965_release_buffer_store(&obj_context->codec_state.decode.bit_plane);
+        i965_release_buffer_store(&obj_context->codec_state.decode.huffman_table);
+
+        for (i = 0; i < obj_context->codec_state.decode.num_slice_params; i++) {
+            i965_release_buffer_store(&obj_context->codec_state.decode.slice_params[i]);
+            i965_release_buffer_store(&obj_context->codec_state.decode.slice_datas[i]);
+        }
+
+        obj_context->codec_state.decode.num_slice_params = 0;
+        obj_context->codec_state.decode.num_slice_datas = 0;
+    }
 
     return vaStatus;
 }
 
-static VAStatus
-i965_render_picture_parameter_buffer(VADriverContextP ctx,
-                                     struct object_context *obj_context,
-                                     struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.dec.pic_param);
-    i965_reference_buffer_store(&obj_context->codec_state.dec.pic_param,
-                                obj_buffer->buffer_store);
+#define I965_RENDER_BUFFER(category, name) i965_render_##category##_##name##_buffer(ctx, obj_context, obj_buffer)
 
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_render_iq_matrix_buffer(VADriverContextP ctx,
-                             struct object_context *obj_context,
-                             struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.dec.iq_matrix);
-    i965_reference_buffer_store(&obj_context->codec_state.dec.iq_matrix,
-                                obj_buffer->buffer_store);
-
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_render_bit_plane_buffer(VADriverContextP ctx,
-                             struct object_context *obj_context,
-                             struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.dec.bit_plane);
-    i965_reference_buffer_store(&obj_context->codec_state.dec.bit_plane,
-                                obj_buffer->buffer_store);
-    
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_render_slice_parameter_buffer(VADriverContextP ctx,
-                                   struct object_context *obj_context,
-                                   struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    
-    if (obj_context->codec_state.dec.num_slice_params == obj_context->codec_state.dec.max_slice_params) {
-        obj_context->codec_state.dec.slice_params = realloc(obj_context->codec_state.dec.slice_params,
-                                                         (obj_context->codec_state.dec.max_slice_params + NUM_SLICES) * sizeof(*obj_context->codec_state.dec.slice_params));
-        memset(obj_context->codec_state.dec.slice_params + obj_context->codec_state.dec.max_slice_params, 0, NUM_SLICES * sizeof(*obj_context->codec_state.dec.slice_params));
-        obj_context->codec_state.dec.max_slice_params += NUM_SLICES;
+#define DEF_RENDER_SINGLE_BUFFER_FUNC(category, name, member)           \
+    static VAStatus                                                     \
+    i965_render_##category##_##name##_buffer(VADriverContextP ctx,      \
+                                             struct object_context *obj_context, \
+                                             struct object_buffer *obj_buffer) \
+    {                                                                   \
+        struct category##_state *category = &obj_context->codec_state.category; \
+        assert(obj_buffer->buffer_store->bo == NULL);                   \
+        assert(obj_buffer->buffer_store->buffer);                       \
+        i965_release_buffer_store(&category->member);                   \
+        i965_reference_buffer_store(&category->member, obj_buffer->buffer_store); \
+        return VA_STATUS_SUCCESS;                                       \
     }
-        
-    i965_release_buffer_store(&obj_context->codec_state.dec.slice_params[obj_context->codec_state.dec.num_slice_params]);
-    i965_reference_buffer_store(&obj_context->codec_state.dec.slice_params[obj_context->codec_state.dec.num_slice_params],
-                                obj_buffer->buffer_store);
-    obj_context->codec_state.dec.num_slice_params++;
-    
-    return VA_STATUS_SUCCESS;
-}
 
-static VAStatus
-i965_render_slice_data_buffer(VADriverContextP ctx,
-                              struct object_context *obj_context,
-                              struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->buffer == NULL);
-    assert(obj_buffer->buffer_store->bo);
-
-    if (obj_context->codec_state.dec.num_slice_datas == obj_context->codec_state.dec.max_slice_datas) {
-        obj_context->codec_state.dec.slice_datas = realloc(obj_context->codec_state.dec.slice_datas,
-                                                        (obj_context->codec_state.dec.max_slice_datas + NUM_SLICES) * sizeof(*obj_context->codec_state.dec.slice_datas));
-        memset(obj_context->codec_state.dec.slice_datas + obj_context->codec_state.dec.max_slice_datas, 0, NUM_SLICES * sizeof(*obj_context->codec_state.dec.slice_datas));
-        obj_context->codec_state.dec.max_slice_datas += NUM_SLICES;
+#define DEF_RENDER_MULTI_BUFFER_FUNC(category, name, member)            \
+    static VAStatus                                                     \
+    i965_render_##category##_##name##_buffer(VADriverContextP ctx,      \
+                                             struct object_context *obj_context, \
+                                             struct object_buffer *obj_buffer) \
+    {                                                                   \
+        struct category##_state *category = &obj_context->codec_state.category; \
+        if (category->num_##member == category->max_##member) {         \
+            category->member = realloc(category->member, (category->max_##member + NUM_SLICES) * sizeof(*category->member)); \
+            memset(category->member + category->max_##member, 0, NUM_SLICES * sizeof(*category->member)); \
+            category->max_##member += NUM_SLICES;                       \
+        }                                                               \
+        i965_release_buffer_store(&category->member[category->num_##member]); \
+        i965_reference_buffer_store(&category->member[category->num_##member], obj_buffer->buffer_store); \
+        category->num_##member++;                                       \
+        return VA_STATUS_SUCCESS;                                       \
     }
-        
-    i965_release_buffer_store(&obj_context->codec_state.dec.slice_datas[obj_context->codec_state.dec.num_slice_datas]);
-    i965_reference_buffer_store(&obj_context->codec_state.dec.slice_datas[obj_context->codec_state.dec.num_slice_datas],
-                                obj_buffer->buffer_store);
-    obj_context->codec_state.dec.num_slice_datas++;
-    
-    return VA_STATUS_SUCCESS;
-}
+
+#define I965_RENDER_DECODE_BUFFER(name) I965_RENDER_BUFFER(decode, name)
+
+#define DEF_RENDER_DECODE_SINGLE_BUFFER_FUNC(name, member) DEF_RENDER_SINGLE_BUFFER_FUNC(decode, name, member)
+DEF_RENDER_DECODE_SINGLE_BUFFER_FUNC(picture_parameter, pic_param)
+DEF_RENDER_DECODE_SINGLE_BUFFER_FUNC(iq_matrix, iq_matrix)
+DEF_RENDER_DECODE_SINGLE_BUFFER_FUNC(bit_plane, bit_plane)
+DEF_RENDER_DECODE_SINGLE_BUFFER_FUNC(huffman_table, huffman_table)
+
+#define DEF_RENDER_DECODE_MULTI_BUFFER_FUNC(name, member) DEF_RENDER_MULTI_BUFFER_FUNC(decode, name, member)
+DEF_RENDER_DECODE_MULTI_BUFFER_FUNC(slice_parameter, slice_params)
+DEF_RENDER_DECODE_MULTI_BUFFER_FUNC(slice_data, slice_datas)
 
 static VAStatus 
 i965_decoder_render_picture(VADriverContextP ctx,
@@ -1287,32 +1305,36 @@ i965_decoder_render_picture(VADriverContextP ctx,
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx); 
     struct object_context *obj_context = CONTEXT(context);
-    VAStatus vaStatus;
+    VAStatus vaStatus = VA_STATUS_SUCCESS;
     int i;
 
-    for (i = 0; i < num_buffers; i++) {
+    for (i = 0; i < num_buffers && vaStatus == VA_STATUS_SUCCESS; i++) {
         struct object_buffer *obj_buffer = BUFFER(buffers[i]);
         assert(obj_buffer);
 
         switch (obj_buffer->type) {
         case VAPictureParameterBufferType:
-            vaStatus = i965_render_picture_parameter_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_DECODE_BUFFER(picture_parameter);
             break;
             
         case VAIQMatrixBufferType:
-            vaStatus = i965_render_iq_matrix_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_DECODE_BUFFER(iq_matrix);
             break;
 
         case VABitPlaneBufferType:
-            vaStatus = i965_render_bit_plane_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_DECODE_BUFFER(bit_plane);
             break;
 
         case VASliceParameterBufferType:
-            vaStatus = i965_render_slice_parameter_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_DECODE_BUFFER(slice_parameter);
             break;
 
         case VASliceDataBufferType:
-            vaStatus = i965_render_slice_data_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_DECODE_BUFFER(slice_data);
+            break;
+
+        case VAHuffmanTableBufferType:
+            vaStatus = I965_RENDER_DECODE_BUFFER(huffman_table);
             break;
 
         default:
@@ -1324,96 +1346,17 @@ i965_decoder_render_picture(VADriverContextP ctx,
     return vaStatus;
 }
 
-static VAStatus
-i965_encoder_render_squence_parameter_buffer(VADriverContextP ctx, 
-                                             struct object_context *obj_context,
-                                             struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.enc.seq_param);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.seq_param,
-                                obj_buffer->buffer_store);
+#define I965_RENDER_ENCODE_BUFFER(name) I965_RENDER_BUFFER(encode, name)
 
-    return VA_STATUS_SUCCESS;
-}
+#define DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(name, member) DEF_RENDER_SINGLE_BUFFER_FUNC(encode, name, member)
+DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(sequence_parameter, seq_param)    
+DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(picture_parameter, pic_param)
+DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(picture_control, pic_control)
+DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(qmatrix, q_matrix)
+DEF_RENDER_ENCODE_SINGLE_BUFFER_FUNC(iqmatrix, iq_matrix)
 
-
-static VAStatus
-i965_encoder_render_picture_parameter_buffer(VADriverContextP ctx, 
-                                             struct object_context *obj_context,
-                                             struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.enc.pic_param);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.pic_param,
-                                obj_buffer->buffer_store);
-
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_encoder_render_slice_parameter_buffer(VADriverContextP ctx, 
-                                           struct object_context *obj_context,
-                                           struct object_buffer *obj_buffer)
-{
-    if (obj_context->codec_state.enc.num_slice_params == obj_context->codec_state.enc.max_slice_params) {
-        obj_context->codec_state.enc.slice_params = realloc(obj_context->codec_state.enc.slice_params,
-                                                            (obj_context->codec_state.enc.max_slice_params + NUM_SLICES) * sizeof(*obj_context->codec_state.enc.slice_params));
-        memset(obj_context->codec_state.enc.slice_params + obj_context->codec_state.enc.max_slice_params, 0, NUM_SLICES * sizeof(*obj_context->codec_state.enc.slice_params));
-        obj_context->codec_state.enc.max_slice_params += NUM_SLICES;
-    }
-
-    i965_release_buffer_store(&obj_context->codec_state.enc.slice_params[obj_context->codec_state.enc.num_slice_params]);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.slice_params[obj_context->codec_state.enc.num_slice_params],
-                                obj_buffer->buffer_store);
-    obj_context->codec_state.enc.num_slice_params++;
-    
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_encoder_render_picture_control_buffer(VADriverContextP ctx, 
-                                           struct object_context *obj_context,
-                                           struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.enc.pic_control);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.pic_control,
-                                obj_buffer->buffer_store);
-
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_encoder_render_qmatrix_buffer(VADriverContextP ctx, 
-                                   struct object_context *obj_context,
-                                   struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.enc.q_matrix);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.iq_matrix,
-                                obj_buffer->buffer_store);
-    
-    return VA_STATUS_SUCCESS;
-}
-
-static VAStatus
-i965_encoder_render_iqmatrix_buffer(VADriverContextP ctx, 
-                                    struct object_context *obj_context,
-                                    struct object_buffer *obj_buffer)
-{
-    assert(obj_buffer->buffer_store->bo == NULL);
-    assert(obj_buffer->buffer_store->buffer);
-    i965_release_buffer_store(&obj_context->codec_state.enc.iq_matrix);
-    i965_reference_buffer_store(&obj_context->codec_state.enc.iq_matrix,
-                                obj_buffer->buffer_store);
-
-    return VA_STATUS_SUCCESS;
-}
+#define DEF_RENDER_ENCODE_MULTI_BUFFER_FUNC(name, member) DEF_RENDER_MULTI_BUFFER_FUNC(encode, name, member)
+DEF_RENDER_ENCODE_MULTI_BUFFER_FUNC(slice_parameter, slice_params)
 
 static VAStatus 
 i965_encoder_render_picture(VADriverContextP ctx,
@@ -1423,36 +1366,36 @@ i965_encoder_render_picture(VADriverContextP ctx,
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx); 
     struct object_context *obj_context = CONTEXT(context);
-    VAStatus vaStatus;
+    VAStatus vaStatus = VA_STATUS_SUCCESS;
     int i;
 
-    for (i = 0; i < num_buffers; i++) {  
+    for (i = 0; i < num_buffers && vaStatus == VA_STATUS_SUCCESS; i++) {
         struct object_buffer *obj_buffer = BUFFER(buffers[i]);
         assert(obj_buffer);
 
         switch (obj_buffer->type) {
         case VAEncSequenceParameterBufferType:
-            vaStatus = i965_encoder_render_squence_parameter_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(sequence_parameter);
             break;
 
         case VAEncPictureParameterBufferType:
-            vaStatus = i965_encoder_render_picture_parameter_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(picture_parameter);
             break;		
 
         case VAEncSliceParameterBufferType:
-            vaStatus = i965_encoder_render_slice_parameter_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(slice_parameter);
             break;
 
         case VAPictureParameterBufferType:
-            vaStatus = i965_encoder_render_picture_control_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(picture_control);
             break;
 
         case VAQMatrixBufferType:
-            vaStatus = i965_encoder_render_qmatrix_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(qmatrix);
             break;
 
         case VAIQMatrixBufferType:
-            vaStatus = i965_encoder_render_iqmatrix_buffer(ctx, obj_context, obj_buffer);
+            vaStatus = I965_RENDER_ENCODE_BUFFER(iqmatrix);
             break;
 
         default:
@@ -1499,7 +1442,6 @@ i965_EndPicture(VADriverContextP ctx, VAContextID context)
     struct object_context *obj_context = CONTEXT(context);
     struct object_config *obj_config;
     VAContextID config;
-    int i;
 
     assert(obj_context);
     config = obj_context->config_id;
@@ -1509,41 +1451,18 @@ i965_EndPicture(VADriverContextP ctx, VAContextID context)
     if (obj_context->codec_type == CODEC_ENC) {
         assert(VAEntrypointEncSlice == obj_config->entrypoint);
 
-        assert(obj_context->codec_state.enc.pic_param);
-        assert(obj_context->codec_state.enc.seq_param);
-        assert(obj_context->codec_state.enc.num_slice_params >= 1);
+        assert(obj_context->codec_state.encode.pic_param);
+        assert(obj_context->codec_state.encode.seq_param);
+        assert(obj_context->codec_state.encode.num_slice_params >= 1);
     } else {
-        assert(obj_context->codec_state.dec.pic_param);
-        assert(obj_context->codec_state.dec.num_slice_params >= 1);
-        assert(obj_context->codec_state.dec.num_slice_datas >= 1);
-        assert(obj_context->codec_state.dec.num_slice_params == obj_context->codec_state.dec.num_slice_datas);
+        assert(obj_context->codec_state.decode.pic_param);
+        assert(obj_context->codec_state.decode.num_slice_params >= 1);
+        assert(obj_context->codec_state.decode.num_slice_datas >= 1);
+        assert(obj_context->codec_state.decode.num_slice_params == obj_context->codec_state.decode.num_slice_datas);
     }
 
     assert(obj_context->hw_context->run);
     obj_context->hw_context->run(ctx, obj_config->profile, &obj_context->codec_state, obj_context->hw_context);
-
-    if (obj_context->codec_type == CODEC_ENC) {
-        obj_context->codec_state.enc.current_render_target = VA_INVALID_SURFACE;
-        obj_context->codec_state.enc.num_slice_params = 0;
-        i965_release_buffer_store(&obj_context->codec_state.enc.pic_param);
-        i965_release_buffer_store(&obj_context->codec_state.enc.seq_param);
-
-        for (i = 0; i < obj_context->codec_state.enc.num_slice_params; i++) {
-            i965_release_buffer_store(&obj_context->codec_state.enc.slice_params[i]);
-        }
-    } else {
-        obj_context->codec_state.dec.current_render_target = -1;
-        obj_context->codec_state.dec.num_slice_params = 0;
-        obj_context->codec_state.dec.num_slice_datas = 0;
-        i965_release_buffer_store(&obj_context->codec_state.dec.pic_param);
-        i965_release_buffer_store(&obj_context->codec_state.dec.iq_matrix);
-        i965_release_buffer_store(&obj_context->codec_state.dec.bit_plane);
-
-        for (i = 0; i < obj_context->codec_state.dec.num_slice_params; i++) {
-            i965_release_buffer_store(&obj_context->codec_state.dec.slice_params[i]);
-            i965_release_buffer_store(&obj_context->codec_state.dec.slice_datas[i]);
-        }
-    }
 
     return VA_STATUS_SUCCESS;
 }
@@ -1556,6 +1475,9 @@ i965_SyncSurface(VADriverContextP ctx,
     struct object_surface *obj_surface = SURFACE(render_target);
 
     assert(obj_surface);
+
+    if(obj_surface->bo)
+        drm_intel_bo_wait_rendering(obj_surface->bo);
 
     return VA_STATUS_SUCCESS;
 }
@@ -1570,15 +1492,16 @@ i965_QuerySurfaceStatus(VADriverContextP ctx,
 
     assert(obj_surface);
 
-    /* Usually GEM will handle synchronization with the graphics hardware */
-#if 0
     if (obj_surface->bo) {
-        dri_bo_map(obj_surface->bo, 0);
-        dri_bo_unmap(obj_surface->bo);
+        if (drm_intel_bo_busy(obj_surface->bo)){
+            *status = VASurfaceRendering;
+        }
+        else {
+            *status = VASurfaceReady;
+        }
+    } else {
+        *status = VASurfaceReady;
     }
-#endif
-    
-    *status = obj_surface->status;
 
     return VA_STATUS_SUCCESS;
 }
@@ -1820,12 +1743,129 @@ void
 i965_check_alloc_surface_bo(VADriverContextP ctx,
                             struct object_surface *obj_surface,
                             int tiled,
-                            unsigned int fourcc)
+                            unsigned int fourcc,
+                            unsigned int subsampling)
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx);
+    int region_width, region_height;
 
-    if (obj_surface->bo)
+    if (obj_surface->bo) {
+        assert(obj_surface->fourcc);
+        assert(obj_surface->fourcc == fourcc);
+        assert(obj_surface->subsampling == subsampling);
         return;
+    }
+
+    obj_surface->x_cb_offset = 0; /* X offset is always 0 */
+    obj_surface->x_cr_offset = 0;
+
+    if (tiled) {
+        assert(fourcc == VA_FOURCC('N', 'V', '1', '2') ||
+               fourcc == VA_FOURCC('I', 'M', 'C', '1') ||
+               fourcc == VA_FOURCC('I', 'M', 'C', '3'));
+
+        obj_surface->width = ALIGN(obj_surface->orig_width, 128);
+        obj_surface->height = ALIGN(obj_surface->orig_height, 32);
+        obj_surface->cb_cr_pitch = obj_surface->width;
+        region_width = obj_surface->width;
+        region_height = obj_surface->height;
+
+        if (fourcc == VA_FOURCC('N', 'V', '1', '2')) {
+            assert(subsampling == SUBSAMPLE_YUV420);
+            obj_surface->y_cb_offset = obj_surface->height;
+            obj_surface->y_cr_offset = obj_surface->height;
+            obj_surface->cb_cr_width = obj_surface->orig_width / 2;
+            obj_surface->cb_cr_height = obj_surface->orig_height / 2;
+            region_height = obj_surface->height + ALIGN(obj_surface->cb_cr_height, 32);
+        } else if (fourcc == VA_FOURCC('I', 'M', 'C', '1') ||
+                   fourcc == VA_FOURCC('I', 'M', 'C', '3')) {
+            switch (subsampling) {
+            case SUBSAMPLE_YUV400:
+                obj_surface->cb_cr_width = 0;
+                obj_surface->cb_cr_height = 0;
+                break;
+
+            case SUBSAMPLE_YUV420:
+                obj_surface->cb_cr_width = obj_surface->orig_width / 2;
+                obj_surface->cb_cr_height = obj_surface->orig_height / 2;
+                break;
+
+            case SUBSAMPLE_YUV422H:
+                obj_surface->cb_cr_width = obj_surface->orig_width / 2;
+                obj_surface->cb_cr_height = obj_surface->orig_height;
+                break;
+
+            case SUBSAMPLE_YUV422V:
+                obj_surface->cb_cr_width = obj_surface->orig_width;
+                obj_surface->cb_cr_height = obj_surface->orig_height / 2;
+                break;
+
+            case SUBSAMPLE_YUV444:
+                obj_surface->cb_cr_width = obj_surface->orig_width;
+                obj_surface->cb_cr_height = obj_surface->orig_height;
+                break;
+
+            case SUBSAMPLE_YUV411:
+                obj_surface->cb_cr_width = obj_surface->orig_width / 4;
+                obj_surface->cb_cr_height = obj_surface->orig_height;
+                break;
+
+            default:
+                assert(0);
+                break;
+            }
+
+            region_height = obj_surface->height + ALIGN(obj_surface->cb_cr_height, 32) * 2;
+
+            if (fourcc == VA_FOURCC('I', 'M', 'C', '1')) {
+                obj_surface->y_cr_offset = obj_surface->height;
+                obj_surface->y_cb_offset = obj_surface->y_cr_offset + ALIGN(obj_surface->cb_cr_height, 32);
+            } else {
+                obj_surface->y_cb_offset = obj_surface->height;
+                obj_surface->y_cr_offset = obj_surface->y_cb_offset + ALIGN(obj_surface->cb_cr_height, 32);
+            }
+        }
+    } else {
+        assert(fourcc != VA_FOURCC('I', 'M', 'C', '1') &&
+               fourcc != VA_FOURCC('I', 'M', 'C', '3'));
+        assert(subsampling == SUBSAMPLE_YUV420);
+
+        region_width = obj_surface->width;
+        region_height = obj_surface->height;
+
+        switch (fourcc) {
+        case VA_FOURCC('N', 'V', '1', '2'):
+            obj_surface->y_cb_offset = obj_surface->height;
+            obj_surface->y_cr_offset = obj_surface->height;
+            obj_surface->cb_cr_width = obj_surface->orig_width / 2;
+            obj_surface->cb_cr_height = obj_surface->orig_height / 2;
+            obj_surface->cb_cr_pitch = obj_surface->width;
+            region_height = obj_surface->height + obj_surface->height / 2;
+            break;
+
+        case VA_FOURCC('Y', 'V', '1', '2'):
+        case VA_FOURCC('I', '4', '2', '0'):
+            if (fourcc == VA_FOURCC('Y', 'V', '1', '2')) {
+                obj_surface->y_cr_offset = obj_surface->height;
+                obj_surface->y_cb_offset = obj_surface->height + obj_surface->height / 4;
+            } else {
+                obj_surface->y_cb_offset = obj_surface->height;
+                obj_surface->y_cr_offset = obj_surface->height + obj_surface->height / 4;
+            }
+
+            obj_surface->cb_cr_width = obj_surface->orig_width / 2;
+            obj_surface->cb_cr_height = obj_surface->orig_height / 2;
+            obj_surface->cb_cr_pitch = obj_surface->width / 2;
+            region_height = obj_surface->height + obj_surface->height / 2;
+            break;
+
+        default:
+            assert(0);
+            break;
+        }
+    }
+
+    obj_surface->size = ALIGN(region_width * region_height, 0x1000);
 
     if (tiled) {
         uint32_t tiling_mode = I915_TILING_Y; /* always uses Y-tiled format */
@@ -1833,8 +1873,8 @@ i965_check_alloc_surface_bo(VADriverContextP ctx,
 
         obj_surface->bo = drm_intel_bo_alloc_tiled(i965->intel.bufmgr, 
                                                    "vaapi surface",
-                                                   obj_surface->width, 
-                                                   obj_surface->height + obj_surface->height / 2,
+                                                   region_width,
+                                                   region_height,
                                                    1,
                                                    &tiling_mode,
                                                    &pitch,
@@ -1849,6 +1889,7 @@ i965_check_alloc_surface_bo(VADriverContextP ctx,
     }
 
     obj_surface->fourcc = fourcc;
+    obj_surface->subsampling = subsampling;
     assert(obj_surface->bo);
 }
 
@@ -1862,7 +1903,6 @@ VAStatus i965_DeriveImage(VADriverContextP ctx,
     struct object_surface *obj_surface; 
     VAImageID image_id;
     unsigned int w_pitch, h_pitch;
-    unsigned int data_size;
     VAStatus va_status;
 
     out_image->image_id = VA_INVALID_ID;
@@ -1873,8 +1913,6 @@ VAStatus i965_DeriveImage(VADriverContextP ctx,
 
     w_pitch = obj_surface->width;
     h_pitch = obj_surface->height;
-    data_size = obj_surface->orig_width * obj_surface->orig_height +
-        2 * (((obj_surface->orig_width + 1) / 2) * ((obj_surface->orig_height + 1) / 2));
 
     image_id = NEW_IMAGE_ID();
 
@@ -1899,7 +1937,7 @@ VAStatus i965_DeriveImage(VADriverContextP ctx,
     image->entry_bytes = 0;
     image->width = obj_surface->orig_width;
     image->height = obj_surface->orig_height;
-    image->data_size = data_size;
+    image->data_size = obj_surface->size;
 
     if (!render_state->inited) {
             image->format.fourcc = VA_FOURCC('Y','V','1','2');
@@ -1936,7 +1974,7 @@ VAStatus i965_DeriveImage(VADriverContextP ctx,
         }
     }
 
-    i965_check_alloc_surface_bo(ctx, obj_surface, HAS_TILED_SURFACE(i965), image->format.fourcc);
+    i965_check_alloc_surface_bo(ctx, obj_surface, HAS_TILED_SURFACE(i965), image->format.fourcc, SUBSAMPLE_YUV420);
     va_status = i965_create_buffer_internal(ctx, 0, VAImageBufferType,
                                             obj_surface->size, 1, NULL, obj_surface->bo, &image->buf);
     if (va_status != VA_STATUS_SUCCESS)
@@ -2304,8 +2342,10 @@ i965_PutSurface(VADriverContextP ctx,
     if ((flags & VA_FILTER_SCALING_MASK) == VA_FILTER_SCALING_NL_ANAMORPHIC)
         pp_flag |= I965_PP_FLAG_AVS;
 
-    if (flags & (VA_BOTTOM_FIELD | VA_TOP_FIELD))
-        pp_flag |= I965_PP_FLAG_DEINTERLACING;
+    if (flags & VA_TOP_FIELD)
+        pp_flag |= I965_PP_FLAG_TOP_FIELD;
+    else if (flags & VA_BOTTOM_FIELD)
+        pp_flag |= I965_PP_FLAG_BOTTOM_FIELD;
 
     src_rect.x      = srcx;
     src_rect.y      = srcy;
@@ -2356,15 +2396,15 @@ i965_Terminate(VADriverContextP ctx)
     if (i965_post_processing_terminate(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
 
-    if (intel_driver_terminate(ctx) == False)
-        return VA_STATUS_ERROR_UNKNOWN;
-
     i965_destroy_heap(&i965->buffer_heap, i965_destroy_buffer);
     i965_destroy_heap(&i965->image_heap, i965_destroy_image);
     i965_destroy_heap(&i965->subpic_heap, i965_destroy_subpic);
     i965_destroy_heap(&i965->surface_heap, i965_destroy_surface);
     i965_destroy_heap(&i965->context_heap, i965_destroy_context);
     i965_destroy_heap(&i965->config_heap, i965_destroy_config);
+
+    if (intel_driver_terminate(ctx) == False)
+        return VA_STATUS_ERROR_UNKNOWN;
 
     free(ctx->pDriverData);
     ctx->pDriverData = NULL;

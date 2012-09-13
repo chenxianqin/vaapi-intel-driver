@@ -31,17 +31,14 @@
 #include <string.h>
 #include <assert.h>
 
-#include <va/va_backend.h>
-
 #include "intel_batchbuffer.h"
 #include "intel_driver.h"
 
 #include "i965_defines.h"
 #include "i965_drv_video.h"
+#include "i965_decoder_utils.h"
 
 #include "gen6_mfd.h"
-
-#define DMV_SIZE        0x88000 /* 557056 bytes for a frame */
 
 static const uint32_t zigzag_direct[64] = {
     0,   1,  8, 16,  9,  2,  3, 10,
@@ -121,7 +118,7 @@ gen6_mfd_avc_frame_store_index(VADriverContextP ctx,
             struct object_surface *obj_surface = SURFACE(ref_pic->picture_id);
             
             assert(obj_surface);
-            i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N', 'V', '1', '2'));
+            i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N', 'V', '1', '2'), SUBSAMPLE_YUV420);
 
             for (frame_idx = 0; frame_idx < ARRAY_ELEMS(gen6_mfd_context->reference_surface); frame_idx++) {
                 for (j = 0; j < ARRAY_ELEMS(gen6_mfd_context->reference_surface); j++) {
@@ -194,8 +191,10 @@ gen6_mfd_init_avc_surface(VADriverContextP ctx,
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx);
     struct gen6_avc_surface *gen6_avc_surface = obj_surface->private_data;
+    int height_in_mbs;
 
     obj_surface->free_private_data = gen6_mfd_free_avc_surface;
+    height_in_mbs = ((pic_param->picture_height_in_mbs_minus1 + 1) & 0xff); /* frame height */
 
     if (!gen6_avc_surface) {
         gen6_avc_surface = calloc(sizeof(struct gen6_avc_surface), 1);
@@ -209,7 +208,7 @@ gen6_mfd_init_avc_surface(VADriverContextP ctx,
     if (gen6_avc_surface->dmv_top == NULL) {
         gen6_avc_surface->dmv_top = dri_bo_alloc(i965->intel.bufmgr,
                                                  "direct mv w/r buffer",
-                                                 DMV_SIZE,
+                                                 128 * height_in_mbs * 64,      /* scalable with frame height */
                                                  0x1000);
     }
 
@@ -217,7 +216,7 @@ gen6_mfd_init_avc_surface(VADriverContextP ctx,
         gen6_avc_surface->dmv_bottom == NULL) {
         gen6_avc_surface->dmv_bottom = dri_bo_alloc(i965->intel.bufmgr,
                                                     "direct mv w/r buffer",
-                                                    DMV_SIZE,
+                                                    128 * height_in_mbs * 64,   /* scalable with frame height */
                                                     0x1000);
     }
 }
@@ -683,6 +682,7 @@ gen6_mfd_avc_slice_state(VADriverContextP ctx,
                          pic_param->seq_fields.bits.mb_adaptive_frame_field_flag);
     int weighted_pred_idc = 0;
     int first_mb_in_slice = 0, first_mb_in_next_slice = 0;
+    unsigned int chroma_log2_weight_denom, luma_log2_weight_denom;
     int slice_type;
 
     if (slice_param->slice_type == SLICE_TYPE_I ||
@@ -695,6 +695,9 @@ gen6_mfd_avc_slice_state(VADriverContextP ctx,
         assert(slice_param->slice_type == SLICE_TYPE_B);
         slice_type = SLICE_TYPE_B;
     }
+
+    luma_log2_weight_denom   = slice_param->luma_log2_weight_denom;
+    chroma_log2_weight_denom = slice_param->chroma_log2_weight_denom;
 
     if (slice_type == SLICE_TYPE_I) {
         assert(slice_param->num_ref_idx_l0_active_minus1 == 0);
@@ -709,7 +712,13 @@ gen6_mfd_avc_slice_state(VADriverContextP ctx,
     } else {
         num_ref_idx_l0 = slice_param->num_ref_idx_l0_active_minus1 + 1;
         num_ref_idx_l1 = slice_param->num_ref_idx_l1_active_minus1 + 1;
-        weighted_pred_idc = (pic_param->pic_fields.bits.weighted_bipred_idc == 1);
+        weighted_pred_idc = pic_param->pic_fields.bits.weighted_bipred_idc;
+
+        if (weighted_pred_idc == 2) {
+            /* 8.4.3 - Derivation process for prediction weights (8-279) */
+            luma_log2_weight_denom   = 5;
+            chroma_log2_weight_denom = 5;
+        }
     }
 
     first_mb_in_slice = slice_param->first_mb_in_slice << mbaff_picture;
@@ -731,8 +740,8 @@ gen6_mfd_avc_slice_state(VADriverContextP ctx,
     OUT_BCS_BATCH(batch, 
                   (num_ref_idx_l1 << 24) |
                   (num_ref_idx_l0 << 16) |
-                  (slice_param->chroma_log2_weight_denom << 8) |
-                  (slice_param->luma_log2_weight_denom << 0));
+                  (chroma_log2_weight_denom << 8) |
+                  (luma_log2_weight_denom << 0));
     OUT_BCS_BATCH(batch, 
                   (weighted_pred_idc << 30) |
                   (slice_param->direct_spatial_mv_pred_flag << 29) |
@@ -783,81 +792,17 @@ gen6_mfd_avc_phantom_slice_state(VADriverContextP ctx,
     ADVANCE_BCS_BATCH(batch);
 }
 
-static void
+static inline void
 gen6_mfd_avc_ref_idx_state(VADriverContextP ctx,
                            VAPictureParameterBufferH264 *pic_param,
                            VASliceParameterBufferH264 *slice_param,
                            struct gen6_mfd_context *gen6_mfd_context)
 {
-    struct intel_batchbuffer *batch = gen6_mfd_context->base.batch;
-    int i, j, num_ref_list;
-    struct {
-        unsigned char bottom_idc:1;
-        unsigned char frame_store_index:4;
-        unsigned char field_picture:1;
-        unsigned char long_term:1;
-        unsigned char non_exist:1;
-    } refs[32];
-
-    if (slice_param->slice_type == SLICE_TYPE_I ||
-        slice_param->slice_type == SLICE_TYPE_SI)
-        return;
-
-    if (slice_param->slice_type == SLICE_TYPE_P ||
-        slice_param->slice_type == SLICE_TYPE_SP) {
-        num_ref_list = 1;
-    } else {
-        num_ref_list = 2;
-    }
-
-    for (i = 0; i < num_ref_list; i++) {
-        VAPictureH264 *va_pic;
-
-        if (i == 0) {
-            va_pic = slice_param->RefPicList0;
-        } else {
-            va_pic = slice_param->RefPicList1;
-        }
-
-        BEGIN_BCS_BATCH(batch, 10);
-        OUT_BCS_BATCH(batch, MFX_AVC_REF_IDX_STATE | (10 - 2));
-        OUT_BCS_BATCH(batch, i);
-
-        for (j = 0; j < 32; j++) {
-            if (va_pic->flags & VA_PICTURE_H264_INVALID) {
-                refs[j].non_exist = 1;
-                refs[j].long_term = 1;
-                refs[j].field_picture = 1;
-                refs[j].frame_store_index = 0xf;
-                refs[j].bottom_idc = 1;
-            } else {
-                int frame_idx;
-                
-                for (frame_idx = 0; frame_idx < ARRAY_ELEMS(gen6_mfd_context->reference_surface); frame_idx++) {
-                    if (gen6_mfd_context->reference_surface[frame_idx].surface_id != VA_INVALID_ID &&
-                        va_pic->picture_id == gen6_mfd_context->reference_surface[frame_idx].surface_id) {
-                        assert(frame_idx == gen6_mfd_context->reference_surface[frame_idx].frame_store_id);
-                        break;
-                    }
-                }
-
-                assert(frame_idx < ARRAY_ELEMS(gen6_mfd_context->reference_surface));
-                
-                refs[j].non_exist = 0;
-                refs[j].long_term = !!(va_pic->flags & VA_PICTURE_H264_LONG_TERM_REFERENCE);
-                refs[j].field_picture = !!(va_pic->flags & 
-                                           (VA_PICTURE_H264_TOP_FIELD | 
-                                            VA_PICTURE_H264_BOTTOM_FIELD));
-                refs[j].frame_store_index = frame_idx;
-                refs[j].bottom_idc = !!(va_pic->flags & VA_PICTURE_H264_BOTTOM_FIELD);
-            }
-
-            va_pic++;
-        }
-        
-        intel_batchbuffer_data(batch, refs, sizeof(refs));
-        ADVANCE_BCS_BATCH(batch);
-    }
+    gen6_send_avc_ref_idx_state(
+        gen6_mfd_context->base.batch,
+        slice_param,
+        gen6_mfd_context->reference_surface
+    );
 }
 
 static void
@@ -911,27 +856,6 @@ gen6_mfd_avc_weightoffset_state(VADriverContextP ctx,
     }
 }
 
-static int
-gen6_mfd_avc_get_slice_bit_offset(uint8_t *buf, int mode_flag, int in_slice_data_bit_offset)
-{
-    int out_slice_data_bit_offset;
-    int slice_header_size = in_slice_data_bit_offset / 8;
-    int i, j;
-
-    for (i = 0, j = 0; i < slice_header_size; i++, j++) {
-        if (!buf[j] && !buf[j + 1] && buf[j + 2] == 3) {
-            i++, j += 2;
-        }
-    }
-
-    out_slice_data_bit_offset = 8 * j + in_slice_data_bit_offset % 8;
-
-    if (mode_flag == ENTROPY_CABAC)
-        out_slice_data_bit_offset = ALIGN(out_slice_data_bit_offset, 0x8);
-
-    return out_slice_data_bit_offset;
-}
-
 static void
 gen6_mfd_avc_bsd_object(VADriverContextP ctx,
                         VAPictureParameterBufferH264 *pic_param,
@@ -940,21 +864,19 @@ gen6_mfd_avc_bsd_object(VADriverContextP ctx,
                         struct gen6_mfd_context *gen6_mfd_context)
 {
     struct intel_batchbuffer *batch = gen6_mfd_context->base.batch;
-    int slice_data_bit_offset;
-    uint8_t *slice_data = NULL;
+    unsigned int slice_data_bit_offset;
 
-    dri_bo_map(slice_data_bo, 0);
-    slice_data = (uint8_t *)(slice_data_bo->virtual + slice_param->slice_data_offset);
-    slice_data_bit_offset = gen6_mfd_avc_get_slice_bit_offset(slice_data,
-                                                              pic_param->pic_fields.bits.entropy_coding_mode_flag,
-                                                              slice_param->slice_data_bit_offset);
-    dri_bo_unmap(slice_data_bo);
+    slice_data_bit_offset = avc_get_first_mb_bit_offset(
+        slice_data_bo,
+        slice_param,
+        pic_param->pic_fields.bits.entropy_coding_mode_flag
+    );
 
     BEGIN_BCS_BATCH(batch, 6);
     OUT_BCS_BATCH(batch, MFD_AVC_BSD_OBJECT | (6 - 2));
     OUT_BCS_BATCH(batch, 
-                  ((slice_param->slice_data_size - (slice_data_bit_offset >> 3)) << 0));
-    OUT_BCS_BATCH(batch, slice_param->slice_data_offset + (slice_data_bit_offset >> 3));
+                  (slice_param->slice_data_size - slice_param->slice_data_offset));
+    OUT_BCS_BATCH(batch, slice_param->slice_data_offset);
     OUT_BCS_BATCH(batch,
                   (0 << 31) |
                   (0 << 14) |
@@ -962,8 +884,8 @@ gen6_mfd_avc_bsd_object(VADriverContextP ctx,
                   (0 << 10) |
                   (0 << 8));
     OUT_BCS_BATCH(batch,
-                  (0 << 16) |
-                  (0 << 6)  |
+                  ((slice_data_bit_offset >> 3) << 16) |
+                  (1 << 6)  |
                   ((0x7 - (slice_data_bit_offset & 0x7)) << 0));
     OUT_BCS_BATCH(batch, 0);
     ADVANCE_BCS_BATCH(batch);
@@ -1007,6 +929,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     struct object_surface *obj_surface;
     dri_bo *bo;
     int i, j, enable_avc_ildb = 0;
+    int width_in_mbs;
 
     for (j = 0; j < decode_state->num_slice_params && enable_avc_ildb == 0; j++) {
         assert(decode_state->slice_params && decode_state->slice_params[j]->buffer);
@@ -1032,6 +955,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferH264 *)decode_state->pic_param->buffer;
     gen6_mfd_avc_frame_store_index(ctx, pic_param, gen6_mfd_context);
+    width_in_mbs = ((pic_param->picture_width_in_mbs_minus1 + 1) & 0xff);
 
     /* Current decoded picture */
     va_pic = &pic_param->CurrPic;
@@ -1040,8 +964,8 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     assert(obj_surface);
     obj_surface->flags &= ~SURFACE_REF_DIS_MASK;
     obj_surface->flags |= (pic_param->pic_fields.bits.reference_pic_flag ? SURFACE_REFERENCED : 0);
+    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
     gen6_mfd_init_avc_surface(ctx, pic_param, obj_surface);
-    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'));
 
     dri_bo_unreference(gen6_mfd_context->post_deblocking_output.bo);
     gen6_mfd_context->post_deblocking_output.bo = obj_surface->bo;
@@ -1056,7 +980,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->intra_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "intra row store",
-                      128 * 64,
+                      width_in_mbs * 64,
                       0x1000);
     assert(bo);
     gen6_mfd_context->intra_row_store_scratch_buffer.bo = bo;
@@ -1065,7 +989,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->deblocking_filter_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "deblocking filter row store",
-                      30720, /* 4 * 120 * 64 */
+                      width_in_mbs * 64 * 4,
                       0x1000);
     assert(bo);
     gen6_mfd_context->deblocking_filter_row_store_scratch_buffer.bo = bo;
@@ -1074,7 +998,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "bsd mpc row store",
-                      11520, /* 1.5 * 120 * 64 */
+                      width_in_mbs * 96,
                       0x1000);
     assert(bo);
     gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo = bo;
@@ -1083,7 +1007,7 @@ gen6_mfd_avc_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->mpr_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "mpr row store",
-                      7680, /* 1. 0 * 120 * 64 */
+                      width_in_mbs * 64,
                       0x1000);
     assert(bo);
     gen6_mfd_context->mpr_row_store_scratch_buffer.bo = bo;
@@ -1162,35 +1086,24 @@ gen6_mfd_mpeg2_decode_init(VADriverContextP ctx,
     VAPictureParameterBufferMPEG2 *pic_param;
     struct i965_driver_data *i965 = i965_driver_data(ctx);
     struct object_surface *obj_surface;
-    int i;
     dri_bo *bo;
+    unsigned int width_in_mbs;
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferMPEG2 *)decode_state->pic_param->buffer;
+    width_in_mbs = ALIGN(pic_param->horizontal_size, 16) / 16;
 
-    /* reference picture */
-    obj_surface = SURFACE(pic_param->forward_reference_picture);
-
-    if (obj_surface && obj_surface->bo)
-        gen6_mfd_context->reference_surface[0].surface_id = pic_param->forward_reference_picture;
-    else
-        gen6_mfd_context->reference_surface[0].surface_id = VA_INVALID_ID;
-
-    obj_surface = SURFACE(pic_param->backward_reference_picture);
-
-    if (obj_surface && obj_surface->bo)
-        gen6_mfd_context->reference_surface[1].surface_id = pic_param->backward_reference_picture;
-    else
-        gen6_mfd_context->reference_surface[1].surface_id = gen6_mfd_context->reference_surface[0].surface_id;
-
-    /* must do so !!! */
-    for (i = 2; i < ARRAY_ELEMS(gen6_mfd_context->reference_surface); i++)
-        gen6_mfd_context->reference_surface[i].surface_id = gen6_mfd_context->reference_surface[i % 2].surface_id;
+    mpeg2_set_reference_surfaces(
+        ctx,
+        gen6_mfd_context->reference_surface,
+        decode_state,
+        pic_param
+    );
 
     /* Current decoded picture */
     obj_surface = SURFACE(decode_state->current_render_target);
     assert(obj_surface);
-    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'));
+    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
 
     dri_bo_unreference(gen6_mfd_context->pre_deblocking_output.bo);
     gen6_mfd_context->pre_deblocking_output.bo = obj_surface->bo;
@@ -1200,7 +1113,7 @@ gen6_mfd_mpeg2_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "bsd mpc row store",
-                      11520, /* 1.5 * 120 * 64 */
+                      width_in_mbs * 96,
                       0x1000);
     assert(bo);
     gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo = bo;
@@ -1220,9 +1133,17 @@ gen6_mfd_mpeg2_pic_state(VADriverContextP ctx,
 {
     struct intel_batchbuffer *batch = gen6_mfd_context->base.batch;
     VAPictureParameterBufferMPEG2 *pic_param;
+    unsigned int tff, pic_structure;
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferMPEG2 *)decode_state->pic_param->buffer;
+
+    pic_structure = pic_param->picture_coding_extension.bits.picture_structure;
+    if (pic_structure == MPEG_FRAME)
+        tff = pic_param->picture_coding_extension.bits.top_field_first;
+    else
+        tff = !(pic_param->picture_coding_extension.bits.is_first_field ^
+                (pic_structure & MPEG_TOP_FIELD));
 
     BEGIN_BCS_BATCH(batch, 4);
     OUT_BCS_BATCH(batch, MFX_MPEG2_PIC_STATE | (4 - 2));
@@ -1233,7 +1154,7 @@ gen6_mfd_mpeg2_pic_state(VADriverContextP ctx,
                   ((pic_param->f_code >> 12) & 0xf) << 16 | /* f_code[0][0] */
                   pic_param->picture_coding_extension.bits.intra_dc_precision << 14 |
                   pic_param->picture_coding_extension.bits.picture_structure << 12 |
-                  pic_param->picture_coding_extension.bits.top_field_first << 11 |
+                  tff << 11 |
                   pic_param->picture_coding_extension.bits.frame_pred_frame_dct << 10 |
                   pic_param->picture_coding_extension.bits.concealment_motion_vectors << 9 |
                   pic_param->picture_coding_extension.bits.q_scale_type << 8 |
@@ -1253,42 +1174,50 @@ gen6_mfd_mpeg2_qm_state(VADriverContextP ctx,
                         struct gen6_mfd_context *gen6_mfd_context)
 {
     struct intel_batchbuffer *batch = gen6_mfd_context->base.batch;
-    VAIQMatrixBufferMPEG2 *iq_matrix;
-    int i;
+    VAIQMatrixBufferMPEG2 * const gen_iq_matrix = &gen6_mfd_context->iq_matrix.mpeg2;
+    int i, j;
 
-    if (!decode_state->iq_matrix || !decode_state->iq_matrix->buffer)
-        return;
+    /* Update internal QM state */
+    if (decode_state->iq_matrix && decode_state->iq_matrix->buffer) {
+        VAIQMatrixBufferMPEG2 * const iq_matrix =
+            (VAIQMatrixBufferMPEG2 *)decode_state->iq_matrix->buffer;
 
-    iq_matrix = (VAIQMatrixBufferMPEG2 *)decode_state->iq_matrix->buffer;
+        gen_iq_matrix->load_intra_quantiser_matrix =
+            iq_matrix->load_intra_quantiser_matrix;
+        if (iq_matrix->load_intra_quantiser_matrix) {
+            for (j = 0; j < 64; j++)
+                gen_iq_matrix->intra_quantiser_matrix[zigzag_direct[j]] =
+                    iq_matrix->intra_quantiser_matrix[j];
+        }
 
+        gen_iq_matrix->load_non_intra_quantiser_matrix =
+            iq_matrix->load_non_intra_quantiser_matrix;
+        if (iq_matrix->load_non_intra_quantiser_matrix) {
+            for (j = 0; j < 64; j++)
+                gen_iq_matrix->non_intra_quantiser_matrix[zigzag_direct[j]] =
+                    iq_matrix->non_intra_quantiser_matrix[j];
+        }
+    }
+
+    /* Commit QM state to HW */
     for (i = 0; i < 2; i++) {
-        int k, m;
         unsigned char *qm = NULL;
-        unsigned char qmx[64];
 
         if (i == 0) {
-            if (iq_matrix->load_intra_quantiser_matrix)
-                qm = iq_matrix->intra_quantiser_matrix;
+            if (gen_iq_matrix->load_intra_quantiser_matrix)
+                qm = gen_iq_matrix->intra_quantiser_matrix;
         } else {
-            if (iq_matrix->load_non_intra_quantiser_matrix)
-                qm = iq_matrix->non_intra_quantiser_matrix;
+            if (gen_iq_matrix->load_non_intra_quantiser_matrix)
+                qm = gen_iq_matrix->non_intra_quantiser_matrix;
         }
 
         if (!qm)
             continue;
 
-        /* Upload quantisation matrix in raster order. The mplayer vaapi
-         * patch passes quantisation matrix in zig-zag order to va library.
-         */
-        for (k = 0; k < 64; k++) {
-            m = zigzag_direct[k];
-            qmx[m] = qm[k];
-        }
-
         BEGIN_BCS_BATCH(batch, 18);
         OUT_BCS_BATCH(batch, MFX_MPEG2_QM_STATE | (18 - 2));
         OUT_BCS_BATCH(batch, i);
-        intel_batchbuffer_data(batch, qmx, 64);
+        intel_batchbuffer_data(batch, qm, 64);
         ADVANCE_BCS_BATCH(batch);
     }
 }
@@ -1302,20 +1231,22 @@ gen6_mfd_mpeg2_bsd_object(VADriverContextP ctx,
 {
     struct intel_batchbuffer *batch = gen6_mfd_context->base.batch;
     unsigned int width_in_mbs = ALIGN(pic_param->horizontal_size, 16) / 16;
-    int mb_count, vpos0, hpos0, vpos1, hpos1, is_field_pic = 0;
+    int mb_count, vpos0, hpos0, vpos1, hpos1, is_field_pic_wa, is_field_pic = 0;
 
     if (pic_param->picture_coding_extension.bits.picture_structure == MPEG_TOP_FIELD ||
         pic_param->picture_coding_extension.bits.picture_structure == MPEG_BOTTOM_FIELD)
         is_field_pic = 1;
+    is_field_pic_wa = is_field_pic &&
+        gen6_mfd_context->wa_mpeg2_slice_vertical_position > 0;
 
-    vpos0 = slice_param->slice_vertical_position / (1 + is_field_pic);
+    vpos0 = slice_param->slice_vertical_position / (1 + is_field_pic_wa);
     hpos0 = slice_param->slice_horizontal_position;
 
     if (next_slice_param == NULL) {
         vpos1 = ALIGN(pic_param->vertical_size, 16) / 16 / (1 + is_field_pic);
         hpos1 = 0;
     } else {
-        vpos1 = next_slice_param->slice_vertical_position / (1 + is_field_pic);
+        vpos1 = next_slice_param->slice_vertical_position / (1 + is_field_pic_wa);
         hpos1 = next_slice_param->slice_horizontal_position;
     }
 
@@ -1362,6 +1293,10 @@ gen6_mfd_mpeg2_decode_picture(VADriverContextP ctx,
     gen6_mfd_bsp_buf_base_addr_state(ctx, decode_state, MFX_FORMAT_MPEG2, gen6_mfd_context);
     gen6_mfd_mpeg2_pic_state(ctx, decode_state, gen6_mfd_context);
     gen6_mfd_mpeg2_qm_state(ctx, decode_state, gen6_mfd_context);
+
+    if (gen6_mfd_context->wa_mpeg2_slice_vertical_position < 0)
+        gen6_mfd_context->wa_mpeg2_slice_vertical_position =
+            mpeg2_wa_slice_vertical_position(decode_state, pic_param);
 
     for (j = 0; j < decode_state->num_slice_params; j++) {
         assert(decode_state->slice_params && decode_state->slice_params[j]->buffer);
@@ -1427,17 +1362,6 @@ static const int va_to_gen6_vc1_profile[4] = {
     GEN6_VC1_ADVANCED_PROFILE
 };
 
-static const int va_to_gen6_vc1_ttfrm[8] = {
-    0,  /* 8x8 */
-    1,  /* 8x4 bottom */
-    1,  /* 8x4 top */
-    1,  /* 8x4 */
-    2,  /* 4x8 bottom */
-    2,  /* 4x8 top */
-    2,  /* 4x8 */
-    3,  /* 4x4 */
-};
-
 static void 
 gen6_mfd_free_vc1_surface(void **data)
 {
@@ -1458,6 +1382,7 @@ gen6_mfd_init_vc1_surface(VADriverContextP ctx,
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx);
     struct gen6_vc1_surface *gen6_vc1_surface = obj_surface->private_data;
+    int height_in_mbs = ALIGN(pic_param->coded_height, 16) / 16;
 
     obj_surface->free_private_data = gen6_mfd_free_vc1_surface;
 
@@ -1472,7 +1397,7 @@ gen6_mfd_init_vc1_surface(VADriverContextP ctx,
     if (gen6_vc1_surface->dmv == NULL) {
         gen6_vc1_surface->dmv = dri_bo_alloc(i965->intel.bufmgr,
                                              "direct mv w/r buffer",
-                                             557056,    /* 64 * 128 * 64 */
+                                             128 * height_in_mbs * 64,  /* scalable with frame height */
                                              0x1000);
     }
 }
@@ -1487,9 +1412,11 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
     struct object_surface *obj_surface;
     int i;
     dri_bo *bo;
+    int width_in_mbs;
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferVC1 *)decode_state->pic_param->buffer;
+    width_in_mbs = ALIGN(pic_param->coded_width, 16) / 16;
 
     /* reference picture */
     obj_surface = SURFACE(pic_param->forward_reference_picture);
@@ -1513,8 +1440,8 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
     /* Current decoded picture */
     obj_surface = SURFACE(decode_state->current_render_target);
     assert(obj_surface);
+    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
     gen6_mfd_init_vc1_surface(ctx, pic_param, obj_surface);
-    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N','V','1','2'));
 
     dri_bo_unreference(gen6_mfd_context->post_deblocking_output.bo);
     gen6_mfd_context->post_deblocking_output.bo = obj_surface->bo;
@@ -1529,7 +1456,7 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->intra_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "intra row store",
-                      128 * 64,
+                      width_in_mbs * 64,
                       0x1000);
     assert(bo);
     gen6_mfd_context->intra_row_store_scratch_buffer.bo = bo;
@@ -1538,7 +1465,7 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->deblocking_filter_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "deblocking filter row store",
-                      46080, /* 6 * 120 * 64 */
+                      width_in_mbs * 6 * 64,
                       0x1000);
     assert(bo);
     gen6_mfd_context->deblocking_filter_row_store_scratch_buffer.bo = bo;
@@ -1547,7 +1474,7 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
     dri_bo_unreference(gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo);
     bo = dri_bo_alloc(i965->intel.bufmgr,
                       "bsd mpc row store",
-                      11520, /* 1.5 * 120 * 64 */
+                      width_in_mbs * 96,
                       0x1000);
     assert(bo);
     gen6_mfd_context->bsd_mpc_row_store_scratch_buffer.bo = bo;
@@ -1570,7 +1497,7 @@ gen6_mfd_vc1_decode_init(VADriverContextP ctx,
 
         bo = dri_bo_alloc(i965->intel.bufmgr,
                           "VC-1 Bitplane",
-                          bitplane_width * bitplane_width,
+                          bitplane_width * height_in_mbs,
                           0x1000);
         assert(bo);
         gen6_mfd_context->bitplane_read_buffer.bo = bo;
@@ -1803,7 +1730,7 @@ gen6_mfd_vc1_pic_state(VADriverContextP ctx,
                   pic_param->mv_fields.bits.mv_table << 20 |
                   pic_param->mv_fields.bits.four_mv_block_pattern_table << 18 |
                   pic_param->mv_fields.bits.two_mv_block_pattern_table << 16 |
-                  va_to_gen6_vc1_ttfrm[pic_param->transform_fields.bits.frame_level_transform_type] << 12 |
+                  pic_param->transform_fields.bits.frame_level_transform_type << 12 |
                   pic_param->transform_fields.bits.mb_level_transform_type_flag << 11 |
                   pic_param->mb_mode_table << 8 |
                   trans_ac_y << 6 |
@@ -2037,7 +1964,7 @@ gen6_mfd_decode_picture(VADriverContextP ctx,
 
 {
     struct gen6_mfd_context *gen6_mfd_context = (struct gen6_mfd_context *)hw_context;
-    struct decode_state *decode_state = &codec_state->dec;
+    struct decode_state *decode_state = &codec_state->decode;
 
     assert(gen6_mfd_context);
 
@@ -2110,6 +2037,8 @@ gen6_dec_hw_context_init(VADriverContextP ctx, VAProfile profile)
         gen6_mfd_context->reference_surface[i].surface_id = VA_INVALID_ID;
         gen6_mfd_context->reference_surface[i].frame_store_id = -1;
     }
+
+    gen6_mfd_context->wa_mpeg2_slice_vertical_position = -1;
     
     return (struct hw_context *)gen6_mfd_context;
 }

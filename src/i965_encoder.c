@@ -31,8 +31,6 @@
 #include <string.h>
 #include <assert.h>
 
-#include <va/va_backend.h>
-
 #include "intel_batchbuffer.h"
 #include "intel_driver.h"
 
@@ -47,7 +45,7 @@ gen6_encoder_end_picture(VADriverContextP ctx,
                          struct hw_context *hw_context)
 {
     struct gen6_encoder_context *gen6_encoder_context = (struct gen6_encoder_context *)hw_context;
-    struct encode_state *encode_state = &codec_state->enc;
+    struct encode_state *encode_state = &codec_state->encode;
     VAStatus vaStatus;
 
     vaStatus = gen6_vme_pipeline(ctx, profile, encode_state, gen6_encoder_context);

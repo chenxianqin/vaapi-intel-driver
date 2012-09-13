@@ -1,5 +1,5 @@
 /*
- * Copyright © 2009 Intel Corporation
+ * Copyright (C) 2012 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -20,34 +20,27 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors:
- *    Xiang Haihao <haihao.xiang@intel.com>
- *    Zou Nan hai <nanhai.zou@intel.com>
- *
  */
 
-#ifndef _I965_MEDIA_MPEG2_H_
-#define _I965_MEDIA_MPEG2_H_
+#ifndef I965_DECODER_H
+#define I965_DECODER_H
 
-#include <xf86drm.h>
-#include <drm.h>
-#include <i915_drm.h>
+#include <stdint.h>
+#include <va/va.h>
 #include <intel_bufmgr.h>
 
-struct decode_state;
-struct i965_media_context;
+#define MAX_GEN_REFERENCE_FRAMES 16
 
-#define NUM_MPEG2_VLD_KERNELS           15
-
-struct i965_mpeg2_context
-{
-    struct i965_kernel vld_kernels[NUM_MPEG2_VLD_KERNELS];
-    VAIQMatrixBufferMPEG2 iq_matrix;
-    int wa_slice_vertical_position;
+typedef struct gen_frame_store GenFrameStore;
+struct gen_frame_store {
+    VASurfaceID surface_id;
+    int         frame_store_id;
 };
 
-void i965_media_mpeg2_decode_init(VADriverContextP ctx, struct decode_state * decode_state, struct i965_media_context *media_context);
-void i965_media_mpeg2_dec_context_init(VADriverContextP ctx, struct i965_media_context *media_context);
+typedef struct gen_buffer GenBuffer;
+struct gen_buffer {
+    dri_bo     *bo;
+    int         valid;
+};
 
-#endif /* _I965_MEDIA_MPEG2_H_ */
+#endif /* I965_DECODER_H */

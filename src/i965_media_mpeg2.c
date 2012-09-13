@@ -32,12 +32,11 @@
 #include <string.h>
 #include <assert.h>
 
-#include <va/va_backend.h>
-
 #include "intel_batchbuffer.h"
 #include "intel_driver.h"
 #include "i965_defines.h"
 #include "i965_drv_video.h"
+#include "i965_decoder_utils.h"
 
 #include "i965_media.h"
 #include "i965_media_mpeg2.h"
@@ -516,7 +515,7 @@ i965_media_mpeg2_surface_setup(VADriverContextP ctx,
     int w = obj_surface->width;
     int h = obj_surface->height;
 
-    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('I','4','2','0'));
+    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('I','4','2','0'), SUBSAMPLE_YUV420);
 
     if (picture_structure == MPEG_FRAME) {
 	i965_media_mpeg2_surface_state(ctx, base_index + 0, obj_surface,
@@ -801,9 +800,9 @@ i965_media_mpeg2_upload_constants(VADriverContextP ctx,
                                   struct i965_media_context *media_context)
 {
     struct i965_mpeg2_context *i965_mpeg2_context = (struct i965_mpeg2_context *)media_context->private_context;
-    int i, j;
+    VAIQMatrixBufferMPEG2 * const gen_iq_matrix = &i965_mpeg2_context->iq_matrix;
+    int i;
     unsigned char *constant_buffer;
-    unsigned char *qmx;
     unsigned int *lib_reloc;
     int lib_reloc_offset = 0;
 
@@ -813,30 +812,36 @@ i965_media_mpeg2_upload_constants(VADriverContextP ctx,
 
     /* iq_matrix */
     if (decode_state->iq_matrix && decode_state->iq_matrix->buffer) {
-        VAIQMatrixBufferMPEG2 *iq_matrix = (VAIQMatrixBufferMPEG2 *)decode_state->iq_matrix->buffer;
+        VAIQMatrixBufferMPEG2 * const iq_matrix =
+            (VAIQMatrixBufferMPEG2 *)decode_state->iq_matrix->buffer;
 
-        /* Upload quantisation matrix in row-major order. The mplayer vaapi
-         * patch passes quantisation matrix in zig-zag order to va library.
-         * Do we need a flag in VAIQMatrixBufferMPEG2 to specify the order
-         * of the quantisation matrix?
-         */
-        qmx = constant_buffer;
+        gen_iq_matrix->load_intra_quantiser_matrix =
+            iq_matrix->load_intra_quantiser_matrix;
         if (iq_matrix->load_intra_quantiser_matrix) {
-            for (i = 0; i < 64; i++) {
-                j = zigzag_direct[i];
-                qmx[j] = iq_matrix->intra_quantiser_matrix[i];
-            }
+            for (i = 0; i < 64; i++)
+                gen_iq_matrix->intra_quantiser_matrix[zigzag_direct[i]] =
+                    iq_matrix->intra_quantiser_matrix[i];
         }
 
-        qmx = constant_buffer + 64;
+        gen_iq_matrix->load_non_intra_quantiser_matrix =
+            iq_matrix->load_non_intra_quantiser_matrix;
         if (iq_matrix->load_non_intra_quantiser_matrix) {
-            for (i = 0; i < 64; i++) {
-                j = zigzag_direct[i];
-                qmx[j] = iq_matrix->non_intra_quantiser_matrix[i];
-            }
+            for (i = 0; i < 64; i++)
+                gen_iq_matrix->non_intra_quantiser_matrix[zigzag_direct[i]] =
+                    iq_matrix->non_intra_quantiser_matrix[i];
         }
 
         /* no chroma quantisation matrices for 4:2:0 data */
+    }
+
+    if (gen_iq_matrix->load_intra_quantiser_matrix) {
+        unsigned char * const qm = constant_buffer;
+        memcpy(qm, gen_iq_matrix->intra_quantiser_matrix, 64);
+    }
+
+    if (gen_iq_matrix->load_non_intra_quantiser_matrix) {
+        unsigned char * const qm = constant_buffer + 64;
+        memcpy(qm, gen_iq_matrix->non_intra_quantiser_matrix, 64);
     }
 
     /* idct table */
@@ -875,6 +880,7 @@ i965_media_mpeg2_objects(VADriverContextP ctx,
                          struct decode_state *decode_state,
                          struct i965_media_context *media_context)
 {
+    struct i965_mpeg2_context * const i965_mpeg2_context = media_context->private_context;
     struct intel_batchbuffer *batch = media_context->base.batch;
     VASliceParameterBufferMPEG2 *slice_param;
     VAPictureParameterBufferMPEG2 *pic_param;
@@ -882,6 +888,10 @@ i965_media_mpeg2_objects(VADriverContextP ctx,
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferMPEG2 *)decode_state->pic_param->buffer;
+
+    if (i965_mpeg2_context->wa_slice_vertical_position < 0)
+        i965_mpeg2_context->wa_slice_vertical_position =
+            mpeg2_wa_slice_vertical_position(decode_state, pic_param);
 
     for (j = 0; j < decode_state->num_slice_params; j++) {
         assert(decode_state->slice_params[j] && decode_state->slice_params[j]->buffer);
@@ -891,8 +901,9 @@ i965_media_mpeg2_objects(VADriverContextP ctx,
         for (i = 0; i < decode_state->slice_params[j]->num_elements; i++) {
             int vpos, hpos, is_field_pic = 0;
 
-            if (pic_param->picture_coding_extension.bits.picture_structure == MPEG_TOP_FIELD ||
-                pic_param->picture_coding_extension.bits.picture_structure == MPEG_BOTTOM_FIELD)
+            if (i965_mpeg2_context->wa_slice_vertical_position > 0 &&
+                (pic_param->picture_coding_extension.bits.picture_structure == MPEG_TOP_FIELD ||
+                 pic_param->picture_coding_extension.bits.picture_structure == MPEG_BOTTOM_FIELD))
                 is_field_pic = 1;
 
             assert(slice_param->slice_data_flag == VA_SLICE_DATA_FLAG_ALL);
@@ -966,6 +977,7 @@ i965_media_mpeg2_dec_context_init(VADriverContextP ctx, struct i965_media_contex
     int i;
 
     i965_mpeg2_context = calloc(1, sizeof(struct i965_mpeg2_context));
+    i965_mpeg2_context->wa_slice_vertical_position = -1;
 
     /* kernel */
     assert(NUM_MPEG2_VLD_KERNELS == (sizeof(mpeg2_vld_kernels_gen4) / 

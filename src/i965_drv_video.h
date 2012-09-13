@@ -81,6 +81,7 @@ struct decode_state
     struct buffer_store **slice_params;
     struct buffer_store *iq_matrix;
     struct buffer_store *bit_plane;
+    struct buffer_store *huffman_table;
     struct buffer_store **slice_datas;
     VASurfaceID current_render_target;
     int max_slice_params;
@@ -107,8 +108,8 @@ struct encode_state
 
 union codec_state
 {
-    struct decode_state dec;
-    struct encode_state enc;
+    struct decode_state decode;
+    struct encode_state encode;
 };
 
 struct hw_context
@@ -161,6 +162,14 @@ struct object_surface
     VAImageID locked_image_id;
     void (*free_private_data)(void **data);
     void *private_data;
+    unsigned int subsampling;
+    int x_cb_offset;
+    int y_cb_offset;
+    int x_cr_offset;
+    int y_cr_offset;
+    int cb_cr_width;
+    int cb_cr_height;
+    int cb_cr_pitch;
 };
 
 struct object_buffer 
@@ -200,6 +209,8 @@ struct hw_codec_info
 {
     struct hw_context *(*dec_hw_context_init)(VADriverContextP, VAProfile);
     struct hw_context *(*enc_hw_context_init)(VADriverContextP, VAProfile);
+    int max_width;
+    int max_height;
 };
 
 
@@ -253,6 +264,7 @@ void
 i965_check_alloc_surface_bo(VADriverContextP ctx,
                             struct object_surface *obj_surface,
                             int tiled,
-                            unsigned int fourcc);
+                            unsigned int fourcc,
+                            unsigned int subsampling);
 
 #endif /* _I965_DRV_VIDEO_H_ */
