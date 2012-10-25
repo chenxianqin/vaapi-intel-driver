@@ -29,8 +29,6 @@
 
 #include <assert.h>
 
-#include <va/va_dricommon.h>
-
 #include "intel_batchbuffer.h"
 #include "intel_memman.h"
 #include "intel_driver.h"
@@ -46,19 +44,34 @@ intel_driver_get_param(struct intel_driver_data *intel, int param, int *value)
    return drmCommandWriteRead(intel->fd, DRM_I915_GETPARAM, &gp, sizeof(gp)) == 0;
 }
 
+static void intel_driver_get_revid(struct intel_driver_data *intel, int *value)
+{
+#define PCI_REVID	8
+	FILE *fp;
+	char config_data[16];
+	
+	fp = fopen("/sys/devices/pci0000:00/0000:00:02.0/config", "r");
+	fread(config_data, 1, 16, fp);
+	fclose(fp);
+	*value = config_data[PCI_REVID];
+	return;
+}
+
 Bool 
 intel_driver_init(VADriverContextP ctx)
 {
     struct intel_driver_data *intel = intel_driver_data(ctx);
-    struct dri_state *dri_state = (struct dri_state *)ctx->dri_state;
+    struct drm_state * const drm_state = (struct drm_state *)ctx->drm_state;
     int has_exec2, has_bsd, has_blt;
 
-    assert(dri_state);
-    assert(dri_state->driConnectedFlag == VA_DRI2 || 
-           dri_state->driConnectedFlag == VA_DRI1);
+    assert(drm_state);
+    assert(VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_DRI1) ||
+           VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_DRI2) ||
+           VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_CUSTOM));
 
-    intel->fd = dri_state->fd;
-    intel->dri2Enabled = (dri_state->driConnectedFlag == VA_DRI2);
+    intel->fd = drm_state->fd;
+    intel->dri2Enabled = (VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_DRI2) ||
+                          VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_CUSTOM));
 
     if (!intel->dri2Enabled) {
         return False;
@@ -74,7 +87,8 @@ intel_driver_init(VADriverContextP ctx)
         intel->has_bsd = has_bsd;
     if (intel_driver_get_param(intel, I915_PARAM_HAS_BLT, &has_blt))
         intel->has_blt = has_blt;
-
+   
+    intel_driver_get_revid(intel, &intel->revision);
     intel_memman_init(intel);
     return True;
 }

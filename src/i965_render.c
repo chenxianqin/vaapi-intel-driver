@@ -36,8 +36,6 @@
 #include <string.h>
 #include <assert.h>
 
-#include <va/va_dricommon.h>
-
 #include "intel_batchbuffer.h"
 #include "intel_driver.h"
 #include "i965_defines.h"
@@ -130,6 +128,14 @@ static const uint32_t ps_kernel_static_gen7[][4] = {
 static const uint32_t ps_subpic_kernel_static_gen7[][4] = {
 #include "shaders/render/exa_wm_src_affine.g7b"
 #include "shaders/render/exa_wm_src_sample_argb.g7b"
+#include "shaders/render/exa_wm_write.g7b"
+};
+
+/* Programs for Haswell */
+static const uint32_t ps_kernel_static_gen7_haswell[][4] = {
+#include "shaders/render/exa_wm_src_affine.g7b"
+#include "shaders/render/exa_wm_src_sample_planar.g7b.haswell"
+#include "shaders/render/exa_wm_yuv_rgb.g7b"
 #include "shaders/render/exa_wm_write.g7b"
 };
 
@@ -245,6 +251,31 @@ static struct i965_kernel render_kernels_gen7[] = {
         PS_KERNEL,
         ps_kernel_static_gen7,
         sizeof(ps_kernel_static_gen7),
+        NULL
+    },
+
+    {
+        "PS_SUBPIC",
+        PS_SUBPIC_KERNEL,
+        ps_subpic_kernel_static_gen7,
+        sizeof(ps_subpic_kernel_static_gen7),
+        NULL
+    }
+};
+
+static struct i965_kernel render_kernels_gen7_haswell[] = {
+    {
+        "SF",
+        SF_KERNEL,
+        sf_kernel_static_gen7,
+        sizeof(sf_kernel_static_gen7),
+        NULL
+    },
+    {
+        "PS",
+        PS_KERNEL,
+        ps_kernel_static_gen7_haswell,
+        sizeof(ps_kernel_static_gen7_haswell),
         NULL
     },
 
@@ -697,6 +728,16 @@ gen7_render_set_surface_tiling(struct gen7_surface_state *ss, uint32_t tiling)
    }
 }
 
+/* Set "Shader Channel Select" */
+static void
+gen7_render_set_surface_scs(struct gen7_surface_state *ss)
+{
+    ss->ss7.shader_chanel_select_r = HSW_SCS_RED;
+    ss->ss7.shader_chanel_select_g = HSW_SCS_GREEN;
+    ss->ss7.shader_chanel_select_b = HSW_SCS_BLUE;
+    ss->ss7.shader_chanel_select_a = HSW_SCS_ALPHA;
+}
+
 static void
 gen7_render_set_surface_state(
     struct gen7_surface_state *ss,
@@ -767,6 +808,8 @@ i965_render_src_surface_state(
                                       region, offset,
                                       w, h,
                                       pitch, format, flags);
+        if (IS_HASWELL(i965->intel.device_id))
+            gen7_render_set_surface_scs(ss);
         dri_bo_emit_reloc(ss_bo,
                           I915_GEM_DOMAIN_SAMPLER, 0,
                           offset,
@@ -890,6 +933,8 @@ i965_render_dest_surface_state(VADriverContextP ctx, int index)
                                       dest_region->bo, 0,
                                       dest_region->width, dest_region->height,
                                       dest_region->pitch, format, 0);
+        if (IS_HASWELL(i965->intel.device_id))
+            gen7_render_set_surface_scs(ss);
         dri_bo_emit_reloc(ss_bo,
                           I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
                           0,
@@ -911,18 +956,56 @@ i965_render_dest_surface_state(VADriverContextP ctx, int index)
     dri_bo_unmap(ss_bo);
 }
 
+static void
+i965_fill_vertex_buffer(
+    VADriverContextP ctx,
+    float tex_coords[4], /* [(u1,v1);(u2,v2)] */
+    float vid_coords[4]  /* [(x1,y1);(x2,y2)] */
+)
+{
+    struct i965_driver_data * const i965 = i965_driver_data(ctx);
+    float vb[12];
+
+    enum { X1, Y1, X2, Y2 };
+
+    static const unsigned int g_rotation_indices[][6] = {
+        [VA_ROTATION_NONE] = { X2, Y2, X1, Y2, X1, Y1 },
+        [VA_ROTATION_90]   = { X2, Y1, X2, Y2, X1, Y2 },
+        [VA_ROTATION_180]  = { X1, Y1, X2, Y1, X2, Y2 },
+        [VA_ROTATION_270]  = { X1, Y2, X1, Y1, X2, Y1 },
+    };
+
+    const unsigned int * const rotation_indices =
+        g_rotation_indices[i965->rotation_attrib->value];
+
+    vb[0]  = tex_coords[rotation_indices[0]]; /* bottom-right corner */
+    vb[1]  = tex_coords[rotation_indices[1]];
+    vb[2]  = vid_coords[X2];
+    vb[3]  = vid_coords[Y2];
+
+    vb[4]  = tex_coords[rotation_indices[2]]; /* bottom-left corner */
+    vb[5]  = tex_coords[rotation_indices[3]];
+    vb[6]  = vid_coords[X1];
+    vb[7]  = vid_coords[Y2];
+
+    vb[8]  = tex_coords[rotation_indices[4]]; /* top-left corner */
+    vb[9]  = tex_coords[rotation_indices[5]];
+    vb[10] = vid_coords[X1];
+    vb[11] = vid_coords[Y1];
+
+    dri_bo_subdata(i965->render_state.vb.vertex_buffer, 0, sizeof(vb), vb);
+}
+
 static void 
 i965_subpic_render_upload_vertex(VADriverContextP ctx,
                                  VASurfaceID surface,
                                  const VARectangle *output_rect)
 {    
     struct i965_driver_data  *i965         = i965_driver_data(ctx);
-    struct i965_render_state *render_state = &i965->render_state;
     struct object_surface    *obj_surface  = SURFACE(surface);
     struct object_subpic     *obj_subpic   = SUBPIC(obj_surface->subpic);
+    float tex_coords[4], vid_coords[4];
     VARectangle dst_rect;
-    float *vb, tx1, tx2, ty1, ty2, x1, x2, y1, y2;
-    int i = 0;
 
     if (obj_subpic->flags & VA_SUBPICTURE_DESTINATION_IS_SCREEN_COORD)
         dst_rect = obj_subpic->dst_rect;
@@ -935,35 +1018,17 @@ i965_subpic_render_upload_vertex(VADriverContextP ctx,
         dst_rect.height = sy * obj_subpic->dst_rect.height;
     }
 
-    dri_bo_map(render_state->vb.vertex_buffer, 1);
-    assert(render_state->vb.vertex_buffer->virtual);
-    vb = render_state->vb.vertex_buffer->virtual;
+    tex_coords[0] = (float)obj_subpic->src_rect.x / obj_subpic->width;
+    tex_coords[1] = (float)obj_subpic->src_rect.y / obj_subpic->height;
+    tex_coords[2] = (float)(obj_subpic->src_rect.x + obj_subpic->src_rect.width) / obj_subpic->width;
+    tex_coords[3] = (float)(obj_subpic->src_rect.y + obj_subpic->src_rect.height) / obj_subpic->height;
 
-    tx1 = (float)obj_subpic->src_rect.x / obj_subpic->width;
-    ty1 = (float)obj_subpic->src_rect.y / obj_subpic->height;
-    tx2 = (float)(obj_subpic->src_rect.x + obj_subpic->src_rect.width) / obj_subpic->width;
-    ty2 = (float)(obj_subpic->src_rect.y + obj_subpic->src_rect.height) / obj_subpic->height;
+    vid_coords[0] = dst_rect.x;
+    vid_coords[1] = dst_rect.y;
+    vid_coords[2] = (float)(dst_rect.x + dst_rect.width);
+    vid_coords[3] = (float)(dst_rect.y + dst_rect.height);
 
-    x1 = (float)dst_rect.x;
-    y1 = (float)dst_rect.y;
-    x2 = (float)(dst_rect.x + dst_rect.width);
-    y2 = (float)(dst_rect.y + dst_rect.height);
-
-    vb[i++] = tx2;
-    vb[i++] = ty2;
-    vb[i++] = x2;
-    vb[i++] = y2;
-
-    vb[i++] = tx1;
-    vb[i++] = ty2;
-    vb[i++] = x1;
-    vb[i++] = y2;
-
-    vb[i++] = tx1;
-    vb[i++] = ty1;
-    vb[i++] = x1;
-    vb[i++] = y1;
-    dri_bo_unmap(render_state->vb.vertex_buffer);
+    i965_fill_vertex_buffer(ctx, tex_coords, vid_coords);
 }
 
 static void 
@@ -978,46 +1043,26 @@ i965_render_upload_vertex(
     struct i965_render_state *render_state = &i965->render_state;
     struct intel_region *dest_region = render_state->draw_region;
     struct object_surface *obj_surface;
-    float *vb;
-
-    float u1, v1, u2, v2;
-    int i, width, height;
-    int box_x1 = dest_region->x + dst_rect->x;
-    int box_y1 = dest_region->y + dst_rect->y;
-    int box_x2 = box_x1 + dst_rect->width;
-    int box_y2 = box_y1 + dst_rect->height;
+    float tex_coords[4], vid_coords[4];
+    int width, height;
 
     obj_surface = SURFACE(surface);
     assert(surface);
-    width = obj_surface->orig_width;
+
+    width  = obj_surface->orig_width;
     height = obj_surface->orig_height;
 
-    u1 = (float)src_rect->x / width;
-    v1 = (float)src_rect->y / height;
-    u2 = (float)(src_rect->x + src_rect->width) / width;
-    v2 = (float)(src_rect->y + src_rect->height) / height;
+    tex_coords[0] = (float)src_rect->x / width;
+    tex_coords[1] = (float)src_rect->y / height;
+    tex_coords[2] = (float)(src_rect->x + src_rect->width) / width;
+    tex_coords[3] = (float)(src_rect->y + src_rect->height) / height;
 
-    dri_bo_map(render_state->vb.vertex_buffer, 1);
-    assert(render_state->vb.vertex_buffer->virtual);
-    vb = render_state->vb.vertex_buffer->virtual;
+    vid_coords[0] = dest_region->x + dst_rect->x;
+    vid_coords[1] = dest_region->y + dst_rect->y;
+    vid_coords[2] = vid_coords[0] + dst_rect->width;
+    vid_coords[3] = vid_coords[1] + dst_rect->height;
 
-    i = 0;
-    vb[i++] = u2;
-    vb[i++] = v2;
-    vb[i++] = (float)box_x2;
-    vb[i++] = (float)box_y2;
-    
-    vb[i++] = u1;
-    vb[i++] = v2;
-    vb[i++] = (float)box_x1;
-    vb[i++] = (float)box_y2;
-
-    vb[i++] = u1;
-    vb[i++] = v1;
-    vb[i++] = (float)box_x1;
-    vb[i++] = (float)box_y1;
-
-    dri_bo_unmap(render_state->vb.vertex_buffer);
+    i965_fill_vertex_buffer(ctx, tex_coords, vid_coords);
 }
 
 static void
@@ -2427,6 +2472,10 @@ gen7_emit_urb(VADriverContextP ctx)
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx);
     struct intel_batchbuffer *batch = i965->batch;
+    unsigned int num_urb_entries = 32;
+
+    if (IS_HASWELL(i965->intel.device_id))
+        num_urb_entries = 64;
 
     BEGIN_BATCH(batch, 2);
     OUT_BATCH(batch, GEN7_3DSTATE_PUSH_CONSTANT_ALLOC_PS | (2 - 2));
@@ -2436,7 +2485,7 @@ gen7_emit_urb(VADriverContextP ctx)
     BEGIN_BATCH(batch, 2);
     OUT_BATCH(batch, GEN7_3DSTATE_URB_VS | (2 - 2));
     OUT_BATCH(batch, 
-              (32 << GEN7_URB_ENTRY_NUMBER_SHIFT) | /* at least 32 */
+              (num_urb_entries << GEN7_URB_ENTRY_NUMBER_SHIFT) |
               (2 - 1) << GEN7_URB_ENTRY_SIZE_SHIFT |
               (1 << GEN7_URB_STARTING_ADDRESS_SHIFT));
    ADVANCE_BATCH(batch);
@@ -2731,6 +2780,13 @@ gen7_emit_wm_state(VADriverContextP ctx, int kernel)
     struct i965_driver_data *i965 = i965_driver_data(ctx);
     struct intel_batchbuffer *batch = i965->batch;
     struct i965_render_state *render_state = &i965->render_state;
+    unsigned int max_threads_shift = GEN7_PS_MAX_THREADS_SHIFT_IVB;
+    unsigned int num_samples = 0;
+
+    if (IS_HASWELL(i965->intel.device_id)) {
+        max_threads_shift = GEN7_PS_MAX_THREADS_SHIFT_HSW;
+        num_samples = 1 << GEN7_PS_SAMPLE_MASK_SHIFT_HSW;
+    }
 
     BEGIN_BATCH(batch, 3);
     OUT_BATCH(batch, GEN6_3DSTATE_WM | (3 - 2));
@@ -2764,7 +2820,7 @@ gen7_emit_wm_state(VADriverContextP ctx, int kernel)
               (5 << GEN7_PS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
     OUT_BATCH(batch, 0); /* scratch space base offset */
     OUT_BATCH(batch, 
-              ((86 - 1) << GEN7_PS_MAX_THREADS_SHIFT) |
+              ((86 - 1) << max_threads_shift) | num_samples |
               GEN7_PS_PUSH_CONSTANT_ENABLE |
               GEN7_PS_ATTRIBUTE_ENABLE |
               GEN7_PS_16_DISPATCH_ENABLE);
@@ -3012,7 +3068,9 @@ i965_render_init(VADriverContextP ctx)
                                  sizeof(render_kernels_gen6[0])));
 
     if (IS_GEN7(i965->intel.device_id))
-        memcpy(render_state->render_kernels, render_kernels_gen7, sizeof(render_state->render_kernels));
+        memcpy(render_state->render_kernels,
+               (IS_HASWELL(i965->intel.device_id) ? render_kernels_gen7_haswell : render_kernels_gen7),
+               sizeof(render_state->render_kernels));
     else if (IS_GEN6(i965->intel.device_id))
         memcpy(render_state->render_kernels, render_kernels_gen6, sizeof(render_state->render_kernels));
     else if (IS_IRONLAKE(i965->intel.device_id))

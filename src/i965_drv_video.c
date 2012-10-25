@@ -27,19 +27,23 @@
  *
  */
 
-#include "config.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
+#include "sysdeps.h"
 
-#include <va/va_dricommon.h>
+#ifdef HAVE_VA_X11
+# include "i965_output_dri.h"
+#endif
+
+#ifdef HAVE_VA_WAYLAND
+# include "i965_output_wayland.h"
+#endif
 
 #include "intel_driver.h"
 #include "intel_memman.h"
 #include "intel_batchbuffer.h"
 #include "i965_defines.h"
 #include "i965_drv_video.h"
+#include "i965_decoder.h"
+#include "i965_encoder.h"
 
 #define CONFIG_ID_OFFSET                0x01000000
 #define CONTEXT_ID_OFFSET               0x02000000
@@ -75,10 +79,39 @@
 #define HAS_JPEG(ctx)   (IS_GEN7((ctx)->intel.device_id) &&     \
                          (ctx)->intel.has_bsd)
 
+#define HAS_ACCELERATED_GETIMAGE(ctx)   (IS_GEN6((ctx)->intel.device_id) ||     \
+                                         IS_GEN7((ctx)->intel.device_id))
+
+#define HAS_ACCELERATED_PUTIMAGE(ctx)   HAS_VPP(ctx)
+static int get_sampling_from_fourcc(unsigned int fourcc);
+
+#if VA_CHECK_VERSION(0,33,0)
+/* Check whether we are rendering to X11 (VA/X11 or VA/GLX API) */
+#define IS_VA_X11(ctx) \
+    (((ctx)->display_type & VA_DISPLAY_MAJOR_MASK) == VA_DISPLAY_X11)
+
+/* Check whether we are rendering to Wayland */
+#define IS_VA_WAYLAND(ctx) \
+    (((ctx)->display_type & VA_DISPLAY_MAJOR_MASK) == VA_DISPLAY_WAYLAND)
+#else
+/* Previous VA-API versions only supported VA/X11 (and VA/GLX) API */
+#define IS_VA_X11(ctx)          1
+#define IS_VA_WAYLAND(ctx)      0
+#endif
+
 enum {
     I965_SURFACETYPE_RGBA = 1,
     I965_SURFACETYPE_YUV,
     I965_SURFACETYPE_INDEXED
+};
+
+/* List of supported display attributes */
+static const VADisplayAttribute i965_display_attributes[] = {
+    {
+        VADisplayAttribRotation,
+        0, 3, VA_ROTATION_NONE,
+        VA_DISPLAY_ATTRIB_GETTABLE|VA_DISPLAY_ATTRIB_SETTABLE
+    },
 };
 
 /* List of supported image formats */
@@ -174,6 +207,13 @@ static struct hw_codec_info gen7_hw_codec_info = {
     .max_height = 4096,
 };
 
+static struct hw_codec_info gen75_hw_codec_info = {
+    .dec_hw_context_init = gen75_dec_hw_context_init,
+    .enc_hw_context_init = gen75_enc_hw_context_init,
+    .max_width = 4096,
+    .max_height = 4096,
+};
+
 VAStatus 
 i965_QueryConfigProfiles(VADriverContextP ctx,
                          VAProfile *profile_list,       /* out */
@@ -199,9 +239,11 @@ i965_QueryConfigProfiles(VADriverContextP ctx,
         profile_list[i++] = VAProfileVC1Advanced;
     }
 
+#ifdef HAVE_VA_JPEG_DECODE
     if (HAS_JPEG(i965)) {
         profile_list[i++] = VAProfileJPEGBaseline;
     }
+#endif
 
     /* If the assert fails then I965_MAX_PROFILES needs to be bigger */
     assert(i <= I965_MAX_PROFILES);
@@ -507,8 +549,14 @@ i965_CreateSurfaces(VADriverContextP ctx,
         obj_surface->orig_width = width;
         obj_surface->orig_height = height;
 
-        obj_surface->width = ALIGN(width, 16);
-        obj_surface->height = ALIGN(height, 16);
+	if (IS_G4X(i965->intel.device_id) || IS_IRONLAKE(i965->intel.device_id)) {
+	        obj_surface->width = ALIGN(width, 16);
+        	obj_surface->height = ALIGN(height, 16);
+	} else {
+	        obj_surface->width = ALIGN(width, 128);
+        	obj_surface->height = ALIGN(height, 32);
+	}
+
         obj_surface->flags = SURFACE_REFERENCED;
         obj_surface->fourcc = 0;
         obj_surface->bo = NULL;
@@ -985,7 +1033,9 @@ i965_create_buffer_internal(VADriverContextP ctx,
     case VAEncSequenceParameterBufferType:
     case VAEncPictureParameterBufferType:
     case VAEncSliceParameterBufferType:
-    case VAHuffmanTableBufferType:
+#ifdef HAVE_VA_JPEG_DECODE
+     case VAHuffmanTableBufferType:
+#endif
         /* Ok */
         break;
 
@@ -1333,9 +1383,11 @@ i965_decoder_render_picture(VADriverContextP ctx,
             vaStatus = I965_RENDER_DECODE_BUFFER(slice_data);
             break;
 
+#ifdef HAVE_VA_JPEG_DECODE
         case VAHuffmanTableBufferType:
             vaStatus = I965_RENDER_DECODE_BUFFER(huffman_table);
             break;
+#endif
 
         default:
             vaStatus = VA_STATUS_ERROR_UNSUPPORTED_BUFFERTYPE;
@@ -1506,6 +1558,56 @@ i965_QuerySurfaceStatus(VADriverContextP ctx,
     return VA_STATUS_SUCCESS;
 }
 
+static VADisplayAttribute *
+get_display_attribute(VADriverContextP ctx, VADisplayAttribType type)
+{
+    struct i965_driver_data * const i965 = i965_driver_data(ctx);
+    unsigned int i;
+
+    if (!i965->display_attributes)
+        return NULL;
+
+    for (i = 0; i < i965->num_display_attributes; i++) {
+        if (i965->display_attributes[i].type == type)
+            return &i965->display_attributes[i];
+    }
+    return NULL;
+}
+
+static bool
+i965_display_attributes_init(VADriverContextP ctx)
+{
+    struct i965_driver_data * const i965 = i965_driver_data(ctx);
+
+    i965->num_display_attributes = ARRAY_ELEMS(i965_display_attributes);
+    i965->display_attributes = malloc(
+        i965->num_display_attributes * sizeof(i965->display_attributes[0]));
+    if (!i965->display_attributes)
+        return false;
+
+    memcpy(
+        i965->display_attributes,
+        i965_display_attributes,
+        sizeof(i965_display_attributes)
+    );
+
+    i965->rotation_attrib = get_display_attribute(ctx, VADisplayAttribRotation);
+    if (!i965->rotation_attrib)
+        return false;
+    return true;
+}
+
+static void
+i965_display_attributes_terminate(VADriverContextP ctx)
+{
+    struct i965_driver_data * const i965 = i965_driver_data(ctx);
+
+    if (i965->display_attributes) {
+        free(i965->display_attributes);
+        i965->display_attributes = NULL;
+        i965->num_display_attributes = 0;
+    }
+}
 
 /* 
  * Query display attributes 
@@ -1514,12 +1616,19 @@ i965_QuerySurfaceStatus(VADriverContextP ctx,
  * returned in "attr_list" is returned in "num_attributes".
  */
 VAStatus 
-i965_QueryDisplayAttributes(VADriverContextP ctx,
-                            VADisplayAttribute *attr_list,    /* out */
-                            int *num_attributes)              /* out */
+i965_QueryDisplayAttributes(
+    VADriverContextP    ctx,
+    VADisplayAttribute *attribs,        /* out */
+    int                *num_attribs_ptr /* out */
+)
 {
-    if (num_attributes)
-        *num_attributes = 0;
+    const int num_attribs = ARRAY_ELEMS(i965_display_attributes);
+
+    if (attribs && num_attribs > 0)
+        memcpy(attribs, i965_display_attributes, sizeof(i965_display_attributes));
+
+    if (num_attribs_ptr)
+        *num_attribs_ptr = num_attribs;
 
     return VA_STATUS_SUCCESS;
 }
@@ -1531,12 +1640,27 @@ i965_QueryDisplayAttributes(VADriverContextP ctx,
  * from vaQueryDisplayAttributes() can have their values retrieved.  
  */
 VAStatus 
-i965_GetDisplayAttributes(VADriverContextP ctx,
-                          VADisplayAttribute *attr_list,    /* in/out */
-                          int num_attributes)
+i965_GetDisplayAttributes(
+    VADriverContextP    ctx,
+    VADisplayAttribute *attribs,        /* inout */
+    int                 num_attribs     /* in */
+)
 {
-    /* TODO */
-    return VA_STATUS_ERROR_UNIMPLEMENTED;
+    int i;
+
+    for (i = 0; i < num_attribs; i++) {
+        VADisplayAttribute *src_attrib, * const dst_attrib = &attribs[i];
+
+        src_attrib = get_display_attribute(ctx, dst_attrib->type);
+        if (src_attrib && (src_attrib->flags & VA_DISPLAY_ATTRIB_GETTABLE)) {
+            dst_attrib->min_value = src_attrib->min_value;
+            dst_attrib->max_value = src_attrib->max_value;
+            dst_attrib->value     = src_attrib->value;
+        }
+        else
+            dst_attrib->flags = VA_DISPLAY_ATTRIB_NOT_SUPPORTED;
+    }
+    return VA_STATUS_SUCCESS;
 }
 
 /* 
@@ -1546,12 +1670,32 @@ i965_GetDisplayAttributes(VADriverContextP ctx,
  * the value is out of range, the function returns VA_STATUS_ERROR_ATTR_NOT_SUPPORTED
  */
 VAStatus 
-i965_SetDisplayAttributes(VADriverContextP ctx,
-                          VADisplayAttribute *attr_list,
-                          int num_attributes)
+i965_SetDisplayAttributes(
+    VADriverContextP    ctx,
+    VADisplayAttribute *attribs,        /* in */
+    int                 num_attribs     /* in */
+)
 {
-    /* TODO */
-    return VA_STATUS_ERROR_UNIMPLEMENTED;
+    int i;
+
+    for (i = 0; i < num_attribs; i++) {
+        VADisplayAttribute *dst_attrib, * const src_attrib = &attribs[i];
+
+        dst_attrib = get_display_attribute(ctx, src_attrib->type);
+        if (!dst_attrib)
+            return VA_STATUS_ERROR_ATTR_NOT_SUPPORTED;
+
+        if (!(dst_attrib->flags & VA_DISPLAY_ATTRIB_SETTABLE))
+            continue;
+
+        if (src_attrib->value < dst_attrib->min_value ||
+            src_attrib->value > dst_attrib->max_value)
+            return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+        dst_attrib->value = src_attrib->value;
+        /* XXX: track modified attributes through timestamps */
+    }
+    return VA_STATUS_SUCCESS;
 }
 
 VAStatus 
@@ -1572,7 +1716,9 @@ i965_Init(VADriverContextP ctx)
     if (intel_driver_init(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
 
-    if (IS_G4X(i965->intel.device_id))
+    if (IS_HASWELL(i965->intel.device_id))
+	i965->codec_info = &gen75_hw_codec_info;
+    else if (IS_G4X(i965->intel.device_id))
         i965->codec_info = &g4x_hw_codec_info;
     else if (IS_IRONLAKE(i965->intel.device_id))
         i965->codec_info = &ironlake_hw_codec_info;
@@ -1583,11 +1729,24 @@ i965_Init(VADriverContextP ctx)
     else
         return VA_STATUS_ERROR_UNKNOWN;
 
+    if (!i965_display_attributes_init(ctx))
+        return VA_STATUS_ERROR_UNKNOWN;
+
     if (i965_post_processing_init(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
 
     if (i965_render_init(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
+
+#ifdef HAVE_VA_WAYLAND
+    if (IS_VA_WAYLAND(ctx) && !i965_output_wayland_init(ctx))
+        return VA_STATUS_ERROR_UNKNOWN;
+#endif
+
+#ifdef HAVE_VA_X11
+    if (IS_VA_X11(ctx) && !i965_output_dri_init(ctx))
+        return VA_STATUS_ERROR_UNKNOWN;
+#endif
 
     _i965InitMutex(&i965->render_mutex);
     i965->batch = intel_batchbuffer_new(&i965->intel, I915_EXEC_RENDER);
@@ -2275,109 +2434,25 @@ i965_PutSurface(VADriverContextP ctx,
                 unsigned int number_cliprects, /* number of clip rects in the clip list */
                 unsigned int flags) /* de-interlacing flags */
 {
-    struct i965_driver_data *i965 = i965_driver_data(ctx); 
-    struct dri_state *dri_state = (struct dri_state *)ctx->dri_state;
-    struct i965_render_state *render_state = &i965->render_state;
-    struct dri_drawable *dri_drawable;
-    union dri_buffer *buffer;
-    struct intel_region *dest_region;
-    struct object_surface *obj_surface; 
-    VARectangle src_rect, dst_rect;
-    int ret;
-    uint32_t name;
-    Bool new_region = False;
-    int pp_flag = 0;
+#ifdef HAVE_VA_X11
+    if (IS_VA_X11(ctx)) {
+        VARectangle src_rect, dst_rect;
 
-    /* Currently don't support DRI1 */
-    if (dri_state->driConnectedFlag != VA_DRI2)
-        return VA_STATUS_ERROR_UNKNOWN;
+        src_rect.x      = srcx;
+        src_rect.y      = srcy;
+        src_rect.width  = srcw;
+        src_rect.height = srch;
 
-    /* Some broken sources such as H.264 conformance case FM2_SVA_C
-     * will get here
-     */
-    obj_surface = SURFACE(surface);
-    if (!obj_surface || !obj_surface->bo)
-        return VA_STATUS_SUCCESS;
+        dst_rect.x      = destx;
+        dst_rect.y      = desty;
+        dst_rect.width  = destw;
+        dst_rect.height = desth;
 
-    _i965LockMutex(&i965->render_mutex);
-
-    dri_drawable = dri_get_drawable(ctx, (Drawable)draw);
-    assert(dri_drawable);
-
-    buffer = dri_get_rendering_buffer(ctx, dri_drawable);
-    assert(buffer);
-    
-    dest_region = render_state->draw_region;
-
-    if (dest_region) {
-        assert(dest_region->bo);
-        dri_bo_flink(dest_region->bo, &name);
-        
-        if (buffer->dri2.name != name) {
-            new_region = True;
-            dri_bo_unreference(dest_region->bo);
-        }
-    } else {
-        dest_region = (struct intel_region *)calloc(1, sizeof(*dest_region));
-        assert(dest_region);
-        render_state->draw_region = dest_region;
-        new_region = True;
+        return i965_put_surface_dri(ctx, surface, draw, &src_rect, &dst_rect,
+                                    cliprects, number_cliprects, flags);
     }
-
-    if (new_region) {
-        dest_region->x = dri_drawable->x;
-        dest_region->y = dri_drawable->y;
-        dest_region->width = dri_drawable->width;
-        dest_region->height = dri_drawable->height;
-        dest_region->cpp = buffer->dri2.cpp;
-        dest_region->pitch = buffer->dri2.pitch;
-
-        dest_region->bo = intel_bo_gem_create_from_name(i965->intel.bufmgr, "rendering buffer", buffer->dri2.name);
-        assert(dest_region->bo);
-
-        ret = dri_bo_get_tiling(dest_region->bo, &(dest_region->tiling), &(dest_region->swizzle));
-        assert(ret == 0);
-    }
-
-    if ((flags & VA_FILTER_SCALING_MASK) == VA_FILTER_SCALING_NL_ANAMORPHIC)
-        pp_flag |= I965_PP_FLAG_AVS;
-
-    if (flags & VA_TOP_FIELD)
-        pp_flag |= I965_PP_FLAG_TOP_FIELD;
-    else if (flags & VA_BOTTOM_FIELD)
-        pp_flag |= I965_PP_FLAG_BOTTOM_FIELD;
-
-    src_rect.x      = srcx;
-    src_rect.y      = srcy;
-    src_rect.width  = srcw;
-    src_rect.height = srch;
-
-    dst_rect.x      = destx;
-    dst_rect.y      = desty;
-    dst_rect.width  = destw;
-    dst_rect.height = desth;
-
-    intel_render_put_surface(ctx, surface, &src_rect, &dst_rect, pp_flag);
-
-    if(obj_surface->subpic != VA_INVALID_ID) {
-        intel_render_put_subpicture(ctx, surface, &src_rect, &dst_rect);
-    }
-
-    dri_swap_buffer(ctx, dri_drawable);
-    obj_surface->flags |= SURFACE_DISPLAYED;
-
-    if ((obj_surface->flags & SURFACE_ALL_MASK) == SURFACE_DISPLAYED) {
-        dri_bo_unreference(obj_surface->bo);
-        obj_surface->bo = NULL;
-        obj_surface->flags &= ~SURFACE_REF_DIS_MASK;
-
-        if (obj_surface->free_private_data)
-            obj_surface->free_private_data(&obj_surface->private_data);
-    }
-
-    _i965UnlockMutex(&i965->render_mutex);
-
-    return VA_STATUS_SUCCESS;
+#endif
+    return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
 VAStatus 
@@ -2390,11 +2465,23 @@ i965_Terminate(VADriverContextP ctx)
 
     _i965DestroyMutex(&i965->render_mutex);
 
+#ifdef HAVE_VA_X11
+    if (IS_VA_X11(ctx))
+        i965_output_dri_terminate(ctx);
+#endif
+
+#ifdef HAVE_VA_WAYLAND
+    if (IS_VA_WAYLAND(ctx))
+        i965_output_wayland_terminate(ctx);
+#endif
+
     if (i965_render_terminate(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
 
     if (i965_post_processing_terminate(ctx) == False)
         return VA_STATUS_ERROR_UNKNOWN;
+
+    i965_display_attributes_terminate(ctx);
 
     i965_destroy_heap(&i965->buffer_heap, i965_destroy_buffer);
     i965_destroy_heap(&i965->image_heap, i965_destroy_image);
@@ -2581,7 +2668,7 @@ VA_DRIVER_INIT_FUNC(  VADriverContextP ctx )
     ctx->max_attributes = I965_MAX_CONFIG_ATTRIBUTES;
     ctx->max_image_formats = I965_MAX_IMAGE_FORMATS;
     ctx->max_subpic_formats = I965_MAX_SUBPIC_FORMATS;
-    ctx->max_display_attributes = I965_MAX_DISPLAY_ATTRIBUTES;
+    ctx->max_display_attributes = 1 + ARRAY_ELEMS(i965_display_attributes);
 
     vtable->vaTerminate = i965_Terminate;
     vtable->vaQueryConfigEntrypoints = i965_QueryConfigEntrypoints;

@@ -235,7 +235,9 @@
 # define GEN7_PS_FLOATING_POINT_MODE_ALT                (1 << 16)
 /* DW3: scratch space */
 /* DW4 */
-# define GEN7_PS_MAX_THREADS_SHIFT                      23
+# define GEN7_PS_MAX_THREADS_SHIFT_IVB                  24
+# define GEN7_PS_MAX_THREADS_SHIFT_HSW                  23
+# define GEN7_PS_SAMPLE_MASK_SHIFT_HSW                  12
 # define GEN7_PS_PUSH_CONSTANT_ENABLE                   (1 << 11)
 # define GEN7_PS_ATTRIBUTE_ENABLE                       (1 << 10)
 # define GEN7_PS_OMASK_TO_RENDER_TARGET                 (1 << 9)
@@ -295,6 +297,7 @@
 #define MFX_AVC_REF_IDX_STATE                   MFX(2, 1, 0, 4)
 #define MFX_AVC_WEIGHTOFFSET_STATE              MFX(2, 1, 0, 5)
 
+#define MFD_AVC_PICID_STATE                     MFX(2, 1, 1, 5)
 #define MFD_AVC_BSD_OBJECT                      MFX(2, 1, 1, 8)
 
 #define MFC_AVC_FQM_STATE                       MFX(2, 1, 2, 2)
@@ -319,6 +322,17 @@
 #define MFX_JPEG_HUFF_TABLE_STATE               MFX(2, 7, 0, 2)
 
 #define MFD_JPEG_BSD_OBJECT                     MFX(2, 7, 1, 8)
+
+#define VEB(pipeline, op, sub_opa, sub_opb)     \
+     (3 << 29 |                                 \
+     (pipeline) << 27 |                         \
+     (op) << 24 |                               \
+     (sub_opa) << 21 |                          \
+     (sub_opb) << 16)
+
+#define VEB_SURFACE_STATE                       VEB(2, 4, 0, 0)
+#define VEB_STATE                               VEB(2, 4, 0, 2)
+#define VEB_DNDI_IECP_STATE                     VEB(2, 4, 0, 3)
 
 #define I965_DEPTHFORMAT_D32_FLOAT              1
 
@@ -525,6 +539,13 @@
 #define I965_MIPFILTER_NONE        0   
 #define I965_MIPFILTER_NEAREST     1   
 #define I965_MIPFILTER_LINEAR      3
+
+#define HSW_SCS_ZERO                      0
+#define HSW_SCS_ONE                       1
+#define HSW_SCS_RED                       4
+#define HSW_SCS_GREEN                     5
+#define HSW_SCS_BLUE                      6
+#define HSW_SCS_ALPHA                     7
 
 #define I965_TEXCOORDMODE_WRAP            0
 #define I965_TEXCOORDMODE_MIRROR          1

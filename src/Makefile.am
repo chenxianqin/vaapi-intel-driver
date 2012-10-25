@@ -40,17 +40,21 @@ driver_ldflags = \
 	$(NULL)
 
 driver_libs = \
-	-lpthread		\
+	-lpthread -ldl		\
 	$(DRM_LIBS) -ldrm_intel	\
 	$(LIBVA_DEPS_LIBS)	\
-	$(LIBVA_X11_DEPS_LIBS)	\
 	$(NULL)
 
 source_c = \
+	dso_utils.c		\
 	gen6_mfc.c		\
 	gen6_mfd.c		\
 	gen6_vme.c		\
 	gen7_mfd.c		\
+	gen75_mfd.c		\
+	gen75_vme.c		\
+	gen75_mfc.c		\
+	gen75_vpp_vebox.c	\
 	i965_avc_bsd.c		\
 	i965_avc_hw_scoreboard.c\
 	i965_avc_ildb.c		\
@@ -70,10 +74,12 @@ source_c = \
 	$(NULL)
 
 source_h = \
+	dso_utils.h		\
 	gen6_mfc.h		\
 	gen6_mfd.h		\
 	gen6_vme.h		\
 	gen7_mfd.h		\
+	gen75_vpp_vebox.h	\
 	i965_avc_bsd.h		\
 	i965_avc_hw_scoreboard.h\
 	i965_avc_ildb.h		\
@@ -95,6 +101,8 @@ source_h = \
 	intel_driver.h          \
 	intel_memman.h          \
 	object_heap.h           \
+	sysdeps.h		\
+	va_backend_compat.h	\
 	$(NULL)
 
 i965_drv_video_la_LTLIBRARIES	= i965_drv_video.la
@@ -104,6 +112,23 @@ i965_drv_video_la_LDFLAGS	= $(driver_ldflags)
 i965_drv_video_la_LIBADD	= $(driver_libs)
 i965_drv_video_la_SOURCES	= $(source_c)
 noinst_HEADERS			= $(source_h)
+
+if USE_X11
+source_c			+= i965_output_dri.c
+source_h			+= i965_output_dri.h
+endif
+
+if USE_WAYLAND
+source_c			+= i965_output_wayland.c
+source_h			+= i965_output_wayland.h
+driver_cflags			+= $(WAYLAND_CFLAGS)
+endif
+
+# Wayland protocol
+i965_output_wayland.c: $(protocol_source_h)
+@wayland_scanner_rules@
+
+DIST_SUBDIRS = $(SUBDIRS) wayland
 
 # Extra clean files so that maintainer-clean removes *everything*
 MAINTAINERCLEANFILES = Makefile.in config.h.in

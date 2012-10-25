@@ -1,5 +1,5 @@
 /*
- * Copyright © 2010 Intel Corporation
+ * Copyright (C) 2012 Intel Corporation. All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -8,11 +8,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- *
+ * 
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- *
+ * 
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -20,31 +20,20 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors:
- *    Xiang Haihao <haihao.xiang@intel.com>
- *
  */
 
-#ifndef __I965_AVC_BSD_H__
-#define __I965_AVC_BSD_H__
+#ifndef SYSDEPS_H
+#define SYSDEPS_H
 
-#define DMV_SIZE        0x88000 /* 557056 bytes for a frame */
+#ifdef HAVE_CONFIG_H
+# include "config.h"
+#endif
 
-struct i965_avc_bsd_context
-{
-    struct {
-        dri_bo *bo;
-    } bsd_raw_store;
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdint.h>
+#include <assert.h>
 
-    struct {
-        dri_bo *bo;
-    } mpr_row_store;
-};
-
-void i965_avc_bsd_pipeline(VADriverContextP, struct decode_state *, void *h264_context);
-void i965_avc_bsd_decode_init(VADriverContextP, void *h264_context);
-Bool i965_avc_bsd_ternimate(struct i965_avc_bsd_context *);
-
-#endif /* __I965_AVC_BSD_H__ */
-
+#endif /* SYSDEPS_H */

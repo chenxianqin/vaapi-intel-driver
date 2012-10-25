@@ -35,6 +35,7 @@
 #include <intel_bufmgr.h>
 
 
+#define INTRA_VME_OUTPUT_IN_BYTES       16      /* in bytes */
 #define MAX_INTERFACE_DESC_GEN6      32
 #define MAX_MEDIA_SURFACES_GEN6      34
 
@@ -77,6 +78,7 @@ struct gen6_vme_context
     } vme_output;
 
     struct i965_kernel vme_kernels[GEN6_VME_KERNEL_NUMBER];
+    void *vme_state_message;
 };
 
 VAStatus gen6_vme_pipeline(VADriverContextP ctx,
@@ -86,4 +88,11 @@ VAStatus gen6_vme_pipeline(VADriverContextP ctx,
 Bool gen6_vme_context_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
 Bool gen6_vme_context_destroy(struct gen6_vme_context *vme_context);
 
+VAStatus gen75_vme_pipeline(VADriverContextP ctx,
+                           VAProfile profile,
+                           struct encode_state *encode_state,
+                           struct gen6_encoder_context *gen6_encoder_context);
+
+Bool gen75_vme_context_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
+Bool gen75_vme_context_destroy(struct gen6_vme_context *vme_context);
 #endif /* _GEN6_VME_H_ */
