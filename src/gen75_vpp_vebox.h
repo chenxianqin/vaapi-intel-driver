@@ -33,7 +33,10 @@
 #include <drm.h>
 #include <i915_drm.h>
 #include <intel_bufmgr.h>
+#include <va/va_vpp.h>
 #include "i965_drv_video.h"
+
+#include "i965_post_processing.h"
 
 #define INPUT_SURFACE  0
 #define OUTPUT_SURFACE 1
@@ -47,6 +50,11 @@
 #define VPP_IECP_CSC       0x00001000
 #define VPP_IECP_AOI       0x00002000
 #define MAX_FILTER_SUM     8
+
+#define PRE_FORMAT_CONVERT      0x01
+#define POST_FORMAT_CONVERT     0x02
+#define POST_SCALING_CONVERT    0x04
+#define POST_COPY_CONVERT       0x08
 
 enum {
     FRAME_IN_CURRENT = 0,
@@ -80,8 +88,8 @@ enum SURFACE_FORMAT{
 
 typedef struct veb_frame_store {
     VASurfaceID surface_id;
-    dri_bo  *bo;
-    unsigned char  is_internal_surface;
+    unsigned int is_internal_surface;
+    struct object_surface *obj_surface;
 } VEBFrameStore;
 
 typedef struct veb_buffer {
@@ -94,13 +102,23 @@ struct intel_vebox_context
 {
     struct intel_batchbuffer *batch;
 
-    VASurfaceID surface_input;
-    VASurfaceID surface_output;
+    struct object_surface *surface_input_object;
+    struct object_surface *surface_output_object;
+    VASurfaceID surface_input_vebox;
+    struct object_surface *surface_input_vebox_object;    
+    VASurfaceID surface_output_vebox;
+    struct object_surface *surface_output_vebox_object;
+    VASurfaceID surface_output_scaled;
+    struct object_surface *surface_output_scaled_object;
+
     unsigned int fourcc_input;
     unsigned int fourcc_output;
-    unsigned int pic_width;
-    unsigned int pic_height;
- 
+
+    int width_input;
+    int height_input;
+    int width_output;
+    int height_output;
+
     VEBFrameStore frame_store[FRAME_STORE_SUM];
 
     VEBBuffer dndi_state_table;
@@ -109,9 +127,9 @@ struct intel_vebox_context
     VEBBuffer vertex_state_table;
 
     unsigned int  filters_mask;
-    unsigned char is_first_frame;
+    int frame_order;
+    int current_output;
 
-    /*
     VAProcPipelineParameterBuffer * pipeline_param;
     void * filter_dn;
     void * filter_di;
@@ -119,8 +137,9 @@ struct intel_vebox_context
     void * filter_iecp_ace;
     void * filter_iecp_tcc;
     void * filter_iecp_amp;
-    void * filter_iecp_csc;
-    */
+
+    unsigned int  filter_iecp_amp_num_elements;
+    unsigned char format_convert_flags;
 };
 
 VAStatus gen75_vebox_process_picture(VADriverContextP ctx,

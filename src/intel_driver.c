@@ -27,7 +27,9 @@
  *
  */
 
-#include <assert.h>
+#include "sysdeps.h"
+
+#include <va/va_drmcommon.h>
 
 #include "intel_batchbuffer.h"
 #include "intel_memman.h"
@@ -51,13 +53,21 @@ static void intel_driver_get_revid(struct intel_driver_data *intel, int *value)
 	char config_data[16];
 	
 	fp = fopen("/sys/devices/pci0000:00/0000:00:02.0/config", "r");
-	fread(config_data, 1, 16, fp);
-	fclose(fp);
-	*value = config_data[PCI_REVID];
+
+        if (fp) {
+            if (fread(config_data, 1, 16, fp))
+                *value = config_data[PCI_REVID];
+            else
+                *value = 2; /* assume it is at least  B-steping */
+            fclose(fp);
+        } else {
+            *value = 2; /* assume it is at least  B-steping */
+        }
+
 	return;
 }
 
-Bool 
+bool 
 intel_driver_init(VADriverContextP ctx)
 {
     struct intel_driver_data *intel = intel_driver_data(ctx);
@@ -74,7 +84,7 @@ intel_driver_init(VADriverContextP ctx)
                           VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_CUSTOM));
 
     if (!intel->dri2Enabled) {
-        return False;
+        return false;
     }
 
     intel->locked = 0;
@@ -90,16 +100,14 @@ intel_driver_init(VADriverContextP ctx)
    
     intel_driver_get_revid(intel, &intel->revision);
     intel_memman_init(intel);
-    return True;
+    return true;
 }
 
-Bool 
+void 
 intel_driver_terminate(VADriverContextP ctx)
 {
     struct intel_driver_data *intel = intel_driver_data(ctx);
 
     intel_memman_terminate(intel);
     pthread_mutex_destroy(&intel->ctxmutex);
-
-    return True;
 }

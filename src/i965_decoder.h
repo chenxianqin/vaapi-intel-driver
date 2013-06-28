@@ -37,6 +37,7 @@ typedef struct gen_frame_store GenFrameStore;
 struct gen_frame_store {
     VASurfaceID surface_id;
     int         frame_store_id;
+    struct      object_surface *obj_surface;
 };
 
 typedef struct gen_buffer GenBuffer;
@@ -45,47 +46,7 @@ struct gen_buffer {
     int         valid;
 };
 
-#if HAVE_GEN_AVC_SURFACE
-
-static pthread_mutex_t free_avc_surface_lock = PTHREAD_MUTEX_INITIALIZER;
-
-typedef struct gen_avc_surface GenAvcSurface;
-struct gen_avc_surface
-{
-    dri_bo *dmv_top;
-    dri_bo *dmv_bottom;
-    int dmv_bottom_flag;
-};
-
-static void 
-gen_free_avc_surface(void **data)
-{
-    GenAvcSurface *avc_surface;
-
-    pthread_mutex_lock(&free_avc_surface_lock);
-
-    avc_surface = *data;
-
-    if (!avc_surface) {
-        pthread_mutex_unlock(&free_avc_surface_lock);
-        return;
-    }
-
-
-    dri_bo_unreference(avc_surface->dmv_top);
-    avc_surface->dmv_top = NULL;
-    dri_bo_unreference(avc_surface->dmv_bottom);
-    avc_surface->dmv_bottom = NULL;
-
-    free(avc_surface);
-    *data = NULL;
-
-    pthread_mutex_unlock(&free_avc_surface_lock);
-}
-
-#endif
-
-extern struct hw_context *
-gen75_dec_hw_context_init(VADriverContextP ctx, VAProfile profile);
+struct hw_context *
+gen75_dec_hw_context_init(VADriverContextP ctx, struct object_config *obj_config);
 
 #endif /* I965_DECODER_H */

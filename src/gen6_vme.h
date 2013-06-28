@@ -34,65 +34,107 @@
 #include <i915_drm.h>
 #include <intel_bufmgr.h>
 
+#include "i965_gpe_utils.h"
 
 #define INTRA_VME_OUTPUT_IN_BYTES       16      /* in bytes */
-#define MAX_INTERFACE_DESC_GEN6      32
-#define MAX_MEDIA_SURFACES_GEN6      34
+#define INTRA_VME_OUTPUT_IN_DWS         (INTRA_VME_OUTPUT_IN_BYTES / 4)
+#define INTER_VME_OUTPUT_IN_BYTES       160     /* the first 128 bytes for MVs and the last 32 bytes for other info */
+#define INTER_VME_OUTPUT_IN_DWS         (INTER_VME_OUTPUT_IN_BYTES / 4)
 
-#define GEN6_VME_KERNEL_NUMBER          2
+#define MAX_INTERFACE_DESC_GEN6         MAX_GPE_KERNELS
+#define MAX_MEDIA_SURFACES_GEN6         34
+
+#define GEN6_VME_KERNEL_NUMBER          3
 
 struct encode_state;
-struct gen6_encoder_context;
+struct intel_encoder_context;
 
 struct gen6_vme_context
 {
-    struct {
-        dri_bo *bo;
-    } surface_state_binding_table;
-
-    struct {
-        dri_bo *bo;
-    } idrt;  /* interface descriptor remap table */
-
-    struct {
-        dri_bo *bo;
-    } curbe;
-
-    struct {
-        unsigned int gpgpu_mode:1;
-        unsigned int max_num_threads:16;
-        unsigned int num_urb_entries:8;
-        unsigned int urb_entry_size:16;
-        unsigned int curbe_allocation_size:16;
-    } vfe_state;
+    struct i965_gpe_context gpe_context;
 
     struct {
         dri_bo *bo;
     } vme_state;
 
-    struct {
-        dri_bo *bo;
-        unsigned int num_blocks;
-        unsigned int size_block; /* in bytes */
-        unsigned int pitch;
-    } vme_output;
+    struct i965_buffer_surface vme_output;
+    struct i965_buffer_surface vme_batchbuffer;
 
-    struct i965_kernel vme_kernels[GEN6_VME_KERNEL_NUMBER];
+
+    void (*vme_surface2_setup)(VADriverContextP ctx,
+                                struct i965_gpe_context *gpe_context,
+                                struct object_surface *obj_surface,
+                                unsigned long binding_table_offset,
+                                unsigned long surface_state_offset);
+    void (*vme_media_rw_surface_setup)(VADriverContextP ctx,
+                                            struct i965_gpe_context *gpe_context,
+                                            struct object_surface *obj_surface,
+                                            unsigned long binding_table_offset,
+                                            unsigned long surface_state_offset);
+    void (*vme_buffer_suface_setup)(VADriverContextP ctx,
+                                    struct i965_gpe_context *gpe_context,
+                                    struct i965_buffer_surface *buffer_surface,
+                                    unsigned long binding_table_offset,
+                                    unsigned long surface_state_offset);
+    void (*vme_media_chroma_surface_setup)(VADriverContextP ctx,
+                                            struct i965_gpe_context *gpe_context,
+                                            struct object_surface *obj_surface,
+                                            unsigned long binding_table_offset,
+                                            unsigned long surface_state_offset);
     void *vme_state_message;
+    unsigned int h264_level;
+    unsigned int video_coding_type;
+    unsigned int vme_kernel_sum;
 };
 
-VAStatus gen6_vme_pipeline(VADriverContextP ctx,
-                           VAProfile profile,
-                           struct encode_state *encode_state,
-                           struct gen6_encoder_context *gen6_encoder_context);
-Bool gen6_vme_context_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
-Bool gen6_vme_context_destroy(struct gen6_vme_context *vme_context);
+Bool gen75_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
 
-VAStatus gen75_vme_pipeline(VADriverContextP ctx,
-                           VAProfile profile,
-                           struct encode_state *encode_state,
-                           struct gen6_encoder_context *gen6_encoder_context);
+extern void intel_vme_update_mbmv_cost(VADriverContextP ctx,
+                                       struct encode_state *encode_state,
+                                       struct intel_encoder_context *encoder_context);
 
-Bool gen75_vme_context_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
-Bool gen75_vme_context_destroy(struct gen6_vme_context *vme_context);
+Bool gen7_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
+
+#define		MODE_INTRA_NONPRED	0
+#define		MODE_INTRA_16X16	1
+#define		MODE_INTRA_8X8		2
+#define		MODE_INTRA_4X4		3
+#define		MODE_INTER_16X8		4
+#define		MODE_INTER_8X16		4
+#define		MODE_INTER_8X8		5
+#define		MODE_INTER_8X4		6
+#define		MODE_INTER_4X8		6
+#define		MODE_INTER_4X4		7
+#define		MODE_INTER_16X16	8
+#define		MODE_INTER_BWD		9
+#define		MODE_REFID_COST		10
+#define		MODE_CHROMA_INTRA	11
+
+#define		MODE_INTER_MV0		12
+#define		MODE_INTER_MV1		13
+#define		MODE_INTER_MV2		14
+
+#define		MODE_INTER_MV3		15
+#define		MODE_INTER_MV4		16
+#define		MODE_INTER_MV5		17
+#define		MODE_INTER_MV6		18
+#define		MODE_INTER_MV7		19
+
+#define		INTRA_PRED_AVAIL_FLAG_AE	0x60
+#define		INTRA_PRED_AVAIL_FLAG_B		0x10
+#define		INTRA_PRED_AVAIL_FLAG_C       	0x8
+#define		INTRA_PRED_AVAIL_FLAG_D		0x4
+#define		INTRA_PRED_AVAIL_FLAG_BCD_MASK	0x1C
+
+extern void
+gen7_vme_walker_fill_vme_batchbuffer(VADriverContextP ctx, 
+                              struct encode_state *encode_state,
+                              int mb_width, int mb_height,
+                              int kernel,
+                              int transform_8x8_mode_flag,
+                              struct intel_encoder_context *encoder_context);
+
+extern void 
+gen7_vme_scoreboard_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
+
 #endif /* _GEN6_VME_H_ */

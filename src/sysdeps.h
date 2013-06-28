@@ -25,9 +25,17 @@
 #ifndef SYSDEPS_H
 #define SYSDEPS_H
 
+#ifdef ANDROID
+
+# include "config_android.h"
+
+#else
+
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
+
+#endif /* ANDROID */
 
 #include <stdio.h>
 #include <stdlib.h>

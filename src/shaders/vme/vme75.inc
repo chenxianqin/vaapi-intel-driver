@@ -131,9 +131,8 @@ define(`orig_xy_ub',            `inline_reg0.0')
 define(`orig_x_ub',             `inline_reg0.0')    /* in macroblock */    
 define(`orig_y_ub',             `inline_reg0.1')
 define(`transform_8x8_ub',      `inline_reg0.4')
-define(`slice_edge_ub',         `inline_reg0.4')
-define(`num_macroblocks',       `inline_reg0.6')
 define(`input_mb_intra_ub',     `inline_reg0.5')
+define(`num_macroblocks',       `inline_reg0.6')
 
 /*
  * GRF 6~11 -- reserved
@@ -266,3 +265,75 @@ define(`BIND_IDX_CBCR',			`6')
 define(`LUMA_CHROMA_MODE',      `0x0')
 define(`LUMA_INTRA_MODE',	`0x1')
 define(`LUMA_INTRA_DISABLE',	`0x2')
+
+define(`RETURN_REG',              `r127.0')
+define(`RET_ARG',              `r127.4')
+
+/* Now at most two registers are used for input parameter */
+define(`INPUT_ARG0',              `r125')
+define(`INPUT_ARG1',              `r126')
+
+/* Two temporal registers are used in the function */
+define(`TEMP_VAR0',              `r123')
+define(`TEMP_VAR1',              `r124')
+
+
+define(`OBR_MESSAGE_TYPE',              `0')
+define(`OBR_CACHE_TYPE',                `10')
+define(`OBR_BIND_IDX',                  `BIND_IDX_OUTPUT')
+
+define(`OBR_CONTROL_0',                 `0')    /* 1 OWord, low 128 bits */
+define(`OBR_CONTROL_1',                 `1')    /* 1 OWord, high 128 bits */
+define(`OBR_CONTROL_2',                 `2')    /* 2 OWords */
+define(`OBR_CONTROL_4',                 `3')    /* 4 OWords */
+define(`OBR_CONTROL_8',                 `4')    /* 8 OWords */
+define(`OBR_WRITE_COMMIT_CATEGORY',     `0')    /* category on SNB+ for Data port */
+define(`OBR_HEADER_PRESENT',            `1')
+
+define(`mb_hwdep',           `r5.6')
+define(`MB_AVAIL',              `1:d')
+define(`MB_PRED_FLAG',          `1:w')
+
+define(`mb_pred_mode',		`r85')
+define(`mb_mvp_ref',		`r86')
+define(`mba_result',		`r87')
+define(`mbb_result',		`r88')
+define(`mbc_result',		`r89')
+define(`mb_ind',                `90')
+define(`mb_msg0',		`r90')
+define(`mb_wb',			`r91')
+define(`mb_intra_wb',		`r91')
+define(`mb_inter_wb',		`r92')
+define(`mb_mv0',		`r93')
+define(`mb_mv1',		`r94')
+define(`mb_mv2',		`r95')
+define(`mb_mv3',		`r96')
+define(`mb_ref',		`r97')
+define(`mb_ref_win',		`r84')
+
+define(`DREF_REGION_SIZE',               `0x2020:UW')
+define(`PRED_L0',               `0x0':uw)
+define(`PRED_L1',               `0x1':uw)
+define(`PRED_BI',               `0x2':uw)
+define(`PRED_DIRECT',           `0x3':uw)
+define(`PRED_MASK',             `0x3':uw)
+
+/* The MAX search len per reference is 16 */
+define(`DSEARCH_PATH_LEN',               `0x00001212')
+define(`BI_WEIGHT',             `0x20':uw)
+define(`DSTART_CENTER',                  `0x00000000')
+define(`INTER_MASK',               	`0x03')
+define(`INTER_16X16MODE',		`0x0')
+define(`INTER_16X8MODE',		`0x01')
+define(`INTER_8X16MODE',		`0x02')
+define(`INTER_8X8MODE',			`0x03')
+define(`INTER_BLOCK0',			`0x0')
+define(`INTER_BLOCK1',			`0x1')
+define(`INTER_BLOCK2',			`0x2')
+define(`INTER_BLOCK3',			`0x3')
+define(`INTER_16X8MODE',		`0x01')
+define(`INTER_8X16MODE',		`0x02')
+
+define(`OBR_MESSAGE_FENCE',              `7')
+define(`OBR_MF_NOCOMMIT',		 `0')
+define(`OBR_MF_COMMIT',			 `0x20')

@@ -31,7 +31,11 @@
 #define _I965_DRV_VIDEO_H_
 
 #include <va/va.h>
+#include <va/va_enc_h264.h>
+#include <va/va_enc_mpeg2.h>
+#include <va/va_vpp.h>
 #include <va/va_backend.h>
+#include <va/va_backend_vpp.h>
 
 #include "i965_mutext.h"
 #include "object_heap.h"
@@ -40,11 +44,27 @@
 #define I965_MAX_PROFILES                       11
 #define I965_MAX_ENTRYPOINTS                    5
 #define I965_MAX_CONFIG_ATTRIBUTES              10
-#define I965_MAX_IMAGE_FORMATS                  3
-#define I965_MAX_SUBPIC_FORMATS                 4
+#define I965_MAX_IMAGE_FORMATS                  10
+#define I965_MAX_SUBPIC_FORMATS                 6
+#define I965_MAX_SUBPIC_SUM                     4
+#define I965_MAX_SURFACE_ATTRIBUTES             16
 
 #define INTEL_STR_DRIVER_VENDOR                 "Intel"
 #define INTEL_STR_DRIVER_NAME                   "i965"
+
+#define I965_SURFACE_TYPE_IMAGE                 0
+#define I965_SURFACE_TYPE_SURFACE               1
+
+#define I965_SURFACE_FLAG_FRAME                 0x00000000
+#define I965_SURFACE_FLAG_TOP_FIELD_FIRST       0x00000001
+#define I965_SURFACE_FLAG_BOTTOME_FIELD_FIRST   0x00000002
+
+struct i965_surface
+{
+    struct object_base *base;
+    int type;
+    int flags;
+};
 
 struct i965_kernel 
 {
@@ -87,6 +107,9 @@ struct decode_state
     int max_slice_datas;
     int num_slice_params;
     int num_slice_datas;
+
+    struct object_surface *render_object;
+    struct object_surface *reference_objects[16]; /* Up to 2 reference surfaces are valid for MPEG-2,*/
 };
 
 struct encode_state
@@ -97,26 +120,52 @@ struct encode_state
     struct buffer_store *iq_matrix;
     struct buffer_store *q_matrix;
     struct buffer_store **slice_params;
-    VASurfaceID current_render_target;
     int max_slice_params;
     int num_slice_params;
+
+    /* for ext */
+    struct buffer_store *seq_param_ext;
+    struct buffer_store *pic_param_ext;
+    struct buffer_store *packed_header_param[4];
+    struct buffer_store *packed_header_data[4];
+    struct buffer_store **slice_params_ext;
+    int max_slice_params_ext;
+    int num_slice_params_ext;
+    int last_packed_header_type;
+
+    struct buffer_store *misc_param[8];
+
+    VASurfaceID current_render_target;
+    struct object_surface *input_yuv_object;
+    struct object_surface *reconstructed_object;
+    struct object_buffer *coded_buf_object;
+    struct object_surface *reference_objects[16]; /* Up to 2 reference surfaces are valid for MPEG-2,*/
+};
+
+struct proc_state
+{
+    struct buffer_store *pipeline_param;
+
+    VASurfaceID current_render_target;
 };
 
 #define CODEC_DEC       0
 #define CODEC_ENC       1
+#define CODEC_PROC      2
 
 union codec_state
 {
     struct decode_state decode;
     struct encode_state encode;
+    struct proc_state proc;
 };
 
 struct hw_context
 {
-    void (*run)(VADriverContextP ctx, 
-                VAProfile profile, 
-                union codec_state *codec_state,
-                struct hw_context *hw_context);
+    VAStatus (*run)(VADriverContextP ctx, 
+                    VAProfile profile, 
+                    union codec_state *codec_state,
+                    struct hw_context *hw_context);
     void (*destroy)(void *);
     struct intel_batchbuffer *batch;
 };
@@ -125,7 +174,7 @@ struct object_context
 {
     struct object_base base;
     VAContextID context_id;
-    VAConfigID config_id;
+    struct object_config *obj_config;
     VASurfaceID *render_targets;		//input->encode, output->decode
     int num_render_targets;
     int picture_width;
@@ -149,7 +198,10 @@ struct object_surface
 {
     struct object_base base;
     VASurfaceStatus status;
-    VASubpictureID subpic;
+    VASubpictureID subpic[I965_MAX_SUBPIC_SUM];
+    struct object_subpic *obj_subpic[I965_MAX_SUBPIC_SUM];
+    unsigned int subpic_render_idx;
+
     int width;
     int height;
     int size;
@@ -194,22 +246,43 @@ struct object_subpic
 {
     struct object_base base;
     VAImageID image;
+    struct object_image *obj_image;
     VARectangle src_rect;
     VARectangle dst_rect;
     unsigned int format;
     int width;
     int height;
     int pitch;
+    float global_alpha;
     dri_bo *bo;
     unsigned int flags;
 };
 
 struct hw_codec_info
 {
-    struct hw_context *(*dec_hw_context_init)(VADriverContextP, VAProfile);
-    struct hw_context *(*enc_hw_context_init)(VADriverContextP, VAProfile);
+    struct hw_context *(*dec_hw_context_init)(VADriverContextP, struct object_config *);
+    struct hw_context *(*enc_hw_context_init)(VADriverContextP, struct object_config *);
+    struct hw_context *(*proc_hw_context_init)(VADriverContextP, struct object_config *);
     int max_width;
     int max_height;
+
+    unsigned int has_mpeg2_decoding:1;
+    unsigned int has_mpeg2_encoding:1;
+    unsigned int has_h264_decoding:1;
+    unsigned int has_h264_encoding:1;
+    unsigned int has_vc1_decoding:1;
+    unsigned int has_vc1_encoding:1;
+    unsigned int has_jpeg_decoding:1;
+    unsigned int has_jpeg_encoding:1;
+    unsigned int has_vpp:1;
+    unsigned int has_accelerated_getimage:1;
+    unsigned int has_accelerated_putimage:1;
+    unsigned int has_tiled_surface:1;
+    unsigned int has_di_motion_adptive:1;
+    unsigned int has_di_motion_compensated:1;
+
+    unsigned int num_filters;
+    VAProcFilterType filters[VAProcFilterCount];
 };
 
 
@@ -227,6 +300,7 @@ struct i965_driver_data
     struct hw_codec_info *codec_info;
 
     _I965Mutex render_mutex;
+    _I965Mutex pp_mutex;
     struct intel_batchbuffer *batch;
     struct i965_render_state render_state;
     void *pp_context;
@@ -235,6 +309,7 @@ struct i965_driver_data
     VADisplayAttribute *display_attributes;
     unsigned int num_display_attributes;
     VADisplayAttribute *rotation_attrib;
+    VAContextID current_context_id;
 
     /* VA/DRI (X11) specific data */
     struct va_dri_output *dri_output;
@@ -276,11 +351,42 @@ i965_check_alloc_surface_bo(VADriverContextP ctx,
                             unsigned int fourcc,
                             unsigned int subsampling);
 
+int
+va_enc_packed_type_to_idx(int packed_type);
+
+/* reserve 2 byte for internal using */
+#define CODED_H264      0
+#define CODED_MPEG2     1
+
+#define H264_DELIMITER0 0x00
+#define H264_DELIMITER1 0x00
+#define H264_DELIMITER2 0x00
+#define H264_DELIMITER3 0x00
+#define H264_DELIMITER4 0x00
+
+#define MPEG2_DELIMITER0        0x00
+#define MPEG2_DELIMITER1        0x00
+#define MPEG2_DELIMITER2        0x00
+#define MPEG2_DELIMITER3        0x00
+#define MPEG2_DELIMITER4        0xb0
+
+struct i965_coded_buffer_segment
+{
+    VACodedBufferSegment base;
+    unsigned char mapped;
+    unsigned char codec;
+};
+
+#define I965_CODEDBUFFER_HEADER_SIZE   ALIGN(sizeof(struct i965_coded_buffer_segment), 64)
 
 extern VAStatus i965_MapBuffer(VADriverContextP ctx,
 		VABufferID buf_id,       /* in */
 		void **pbuf);            /* out */
 
 extern VAStatus i965_UnmapBuffer(VADriverContextP ctx, VABufferID buf_id);
+
+#define I965_SURFACE_MEM_NATIVE             0
+#define I965_SURFACE_MEM_GEM_FLINK          1
+#define I965_SURFACE_MEM_DRM_PRIME          2
 
 #endif /* _I965_DRV_VIDEO_H_ */

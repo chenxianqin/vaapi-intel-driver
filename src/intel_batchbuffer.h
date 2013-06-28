@@ -26,11 +26,12 @@ struct intel_batchbuffer
                int DR4, unsigned int ring_flag);
 };
 
-struct intel_batchbuffer *intel_batchbuffer_new(struct intel_driver_data *intel, int flag);
+struct intel_batchbuffer *intel_batchbuffer_new(struct intel_driver_data *intel, int flag, int buffer_size);
 void intel_batchbuffer_free(struct intel_batchbuffer *batch);
 void intel_batchbuffer_start_atomic(struct intel_batchbuffer *batch, unsigned int size);
 void intel_batchbuffer_start_atomic_bcs(struct intel_batchbuffer *batch, unsigned int size);
 void intel_batchbuffer_start_atomic_blt(struct intel_batchbuffer *batch, unsigned int size);
+void intel_batchbuffer_start_atomic_veb(struct intel_batchbuffer *batch, unsigned int size);
 void intel_batchbuffer_end_atomic(struct intel_batchbuffer *batch);
 void intel_batchbuffer_emit_dword(struct intel_batchbuffer *batch, unsigned int x);
 void intel_batchbuffer_emit_reloc(struct intel_batchbuffer *batch, dri_bo *bo, 
@@ -44,6 +45,8 @@ void intel_batchbuffer_begin_batch(struct intel_batchbuffer *batch, int total);
 void intel_batchbuffer_advance_batch(struct intel_batchbuffer *batch);
 void intel_batchbuffer_check_batchbuffer_flag(struct intel_batchbuffer *batch, int flag);
 int intel_batchbuffer_check_free_space(struct intel_batchbuffer *batch, int size);
+int intel_batchbuffer_used_size(struct intel_batchbuffer *batch);
+void intel_batchbuffer_align(struct intel_batchbuffer *batch, unsigned int alignedment);
 
 #define __BEGIN_BATCH(batch, n, f) do {                         \
         assert(f == batch->flag);                               \

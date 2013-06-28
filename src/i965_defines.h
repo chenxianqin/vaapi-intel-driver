@@ -288,6 +288,8 @@
 #define MFX_QM_STATE                            MFX(2, 0, 0, 7)
 #define MFX_FQM_STATE                           MFX(2, 0, 0, 8)
 
+#define MFX_INSERT_OBJECT                       MFX(2, 0, 2, 8)
+
 #define MFX_WAIT                                MFX(1, 0, 0, 0)
 
 #define MFX_AVC_IMG_STATE                       MFX(2, 1, 0, 0)
@@ -308,6 +310,9 @@
 #define MFX_MPEG2_QM_STATE                      MFX(2, 3, 0, 1)
 
 #define MFD_MPEG2_BSD_OBJECT                    MFX(2, 3, 1, 8)
+
+#define MFC_MPEG2_SLICEGROUP_STATE              MFX(2, 3, 2, 3)
+#define MFC_MPEG2_PAK_OBJECT                    MFX(2, 3, 2, 9)
 
 #define MFX_VC1_PIC_STATE                       MFX(2, 2, 0, 0)
 #define MFX_VC1_PRED_PIPE_STATE                 MFX(2, 2, 0, 1)
@@ -487,6 +492,8 @@
 #define I965_SURFACEFORMAT_R8G8_USCALED                   0x11D
 #define I965_SURFACEFORMAT_R16_SSCALED                    0x11E
 #define I965_SURFACEFORMAT_R16_USCALED                    0x11F
+#define I965_SURFACEFORMAT_P8A8_UNORM                     0x122 
+#define I965_SURFACEFORMAT_A8P8_UNORM                     0x123
 #define I965_SURFACEFORMAT_R8_UNORM                       0x140 
 #define I965_SURFACEFORMAT_R8_SNORM                       0x141 
 #define I965_SURFACEFORMAT_R8_SINT                        0x142 
@@ -743,6 +750,7 @@
 #define SUBSAMPLE_YUV422V       3
 #define SUBSAMPLE_YUV444        4
 #define SUBSAMPLE_YUV411        5
+#define SUBSAMPLE_RGBX          6
 
 #define URB_SIZE(intel)         (IS_GEN7(intel->device_id) ? 4096 :     \
                                  IS_GEN6(intel->device_id) ? 1024 :     \

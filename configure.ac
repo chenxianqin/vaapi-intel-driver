@@ -1,7 +1,7 @@
 # intel-driver package version number
 m4_define([intel_driver_major_version], [1])
-m4_define([intel_driver_minor_version], [0])
-m4_define([intel_driver_micro_version], [19])
+m4_define([intel_driver_minor_version], [2])
+m4_define([intel_driver_micro_version], [1])
 m4_define([intel_driver_pre_version],   [1])
 m4_define([intel_driver_version],
           [intel_driver_major_version.intel_driver_minor_version.intel_driver_micro_version])
@@ -10,11 +10,11 @@ m4_append([intel_driver_version], intel_driver_pre_version, [.pre])
 ])
 
 # libva minimum version requirement
-m4_define([libva_package_version], [1.0.14])
-m4_define([va_api_version], [0.32.0])
+m4_define([va_api_version], [0.34])
+m4_define([libva_package_version], [1.2.0])
 
 # libdrm minimum version requirement
-m4_define([libdrm_version], [2.4.23])
+m4_define([libdrm_version], [2.4.45])
 
 AC_PREREQ([2.57])
 AC_INIT([intel_driver], [intel_driver_version], [haihao.xiang@intel.com],
@@ -22,7 +22,7 @@ AC_INIT([intel_driver], [intel_driver_version], [haihao.xiang@intel.com],
 AC_CONFIG_SRCDIR([Makefile.am])
 AM_INIT_AUTOMAKE([1.9 tar-ustar])
 
-AM_CONFIG_HEADER([src/config.h])
+AC_CONFIG_HEADERS([src/config.h])
 
 INTEL_DRIVER_MAJOR_VERSION=intel_driver_major_version
 INTEL_DRIVER_MINOR_VERSION=intel_driver_minor_version
@@ -64,6 +64,8 @@ AM_PROG_CC_C_O
 AC_C_BIGENDIAN
 AC_HEADER_STDC
 AC_SYS_LARGEFILE
+AC_CHECK_LIB([m], [sin])
+AC_CHECK_FUNCS([log2f])
 
 LIBVA_PACKAGE_VERSION=libva_package_version
 AC_SUBST(LIBVA_PACKAGE_VERSION)
@@ -74,7 +76,7 @@ PKG_CHECK_MODULES([DRM], [libdrm >= $LIBDRM_VERSION])
 AC_SUBST(LIBDRM_VERSION)
 
 dnl Check for gen4asm
-PKG_CHECK_MODULES(GEN4ASM, [intel-gen4asm >= 1.2], [gen4asm=yes], [gen4asm=no])
+PKG_CHECK_MODULES(GEN4ASM, [intel-gen4asm >= 1.3], [gen4asm=yes], [gen4asm=no])
 AM_CONDITIONAL(HAVE_GEN4ASM, test x$gen4asm = xyes)
 AC_PATH_PROG([GEN4ASM], [intel-gen4asm])
 
@@ -163,30 +165,6 @@ m4_ifdef([WAYLAND_SCANNER_RULES],
     [WAYLAND_SCANNER_RULES(['$(top_srcdir)/src/wayland'])],
     [wayland_scanner_rules=""; AC_SUBST(wayland_scanner_rules)])
 
-dnl Check for JPEG decoding API
-AC_CACHE_CHECK([for JPEG decoding API], ac_cv_have_va_jpeg_decode, [
-    saved_CPPFLAGS="$CPPFLAGS"
-    CPPFLAGS="$CPPFLAGS $LIBVA_DEPS_CFLAGS"
-    saved_LIBS="$LIBS"
-    LIBS="$LIBS $LIBVA_DEPS_LIBS"
-    AC_COMPILE_IFELSE(
-        [AC_LANG_PROGRAM(
-            [[#include <va/va.h>]],
-            [[VAPictureParameterBufferJPEGBaseline pic_param;
-              VASliceParameterBufferJPEGBaseline slice_param;
-              VAHuffmanTableBufferJPEGBaseline huffman_table;
-              VAIQMatrixBufferJPEGBaseline iq_matrix;]])],
-            [ac_cv_have_va_jpeg_decode="yes"],
-            [ac_cv_have_va_jpeg_decode="no"]
-    )
-    CPPFLAGS="$saved_CPPFLAGS"
-    LIBS="$saved_LIBS"
-])
-if test "$ac_cv_have_va_jpeg_decode" = "yes"; then
-    AC_DEFINE(HAVE_VA_JPEG_DECODE, 1,
-        [Defined to 1 if VA-API exposes JPEG decoding])
-fi
-
 AC_OUTPUT([
     Makefile
     debian.upstream/Makefile 
@@ -198,7 +176,10 @@ AC_OUTPUT([
     src/shaders/mpeg2/Makefile
     src/shaders/mpeg2/vld/Makefile
     src/shaders/post_processing/Makefile
+    src/shaders/post_processing/gen5_6/Makefile
+    src/shaders/post_processing/gen7/Makefile
     src/shaders/render/Makefile
+    src/shaders/utils/Makefile
     src/shaders/vme/Makefile
     src/wayland/Makefile
 ])

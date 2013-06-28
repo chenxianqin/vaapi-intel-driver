@@ -22,7 +22,7 @@
 
 SUBDIRS = shaders
 
-INCLUDES = \
+AM_CPPFLAGS = \
 	-DPTHREADS		\
 	$(DRM_CFLAGS)		\
 	$(LIBVA_DEPS_CFLAGS)	\
@@ -40,7 +40,7 @@ driver_ldflags = \
 	$(NULL)
 
 driver_libs = \
-	-lpthread -ldl		\
+	-lpthread -lm -ldl	\
 	$(DRM_LIBS) -ldrm_intel	\
 	$(LIBVA_DEPS_LIBS)	\
 	$(NULL)
@@ -48,12 +48,17 @@ driver_libs = \
 source_c = \
 	dso_utils.c		\
 	gen6_mfc.c		\
+	gen6_mfc_common.c	\
 	gen6_mfd.c		\
 	gen6_vme.c		\
+	gen7_vme.c		\
+	gen7_mfc.c		\
 	gen7_mfd.c		\
 	gen75_mfd.c		\
-	gen75_vme.c		\
 	gen75_mfc.c		\
+	gen75_picture_process.c	\
+	gen75_vme.c		\
+	gen75_vpp_gpe.c  	\
 	gen75_vpp_vebox.c	\
 	i965_avc_bsd.c		\
 	i965_avc_hw_scoreboard.c\
@@ -61,9 +66,11 @@ source_c = \
 	i965_decoder_utils.c	\
 	i965_drv_video.c	\
 	i965_encoder.c		\
+	i965_encoder_utils.c	\
 	i965_media.c		\
 	i965_media_h264.c	\
 	i965_media_mpeg2.c	\
+	i965_gpe_utils.c	\
 	i965_post_processing.c	\
 	i965_render.c		\
 	intel_batchbuffer.c	\
@@ -71,6 +78,7 @@ source_c = \
 	intel_driver.c		\
 	intel_memman.c		\
 	object_heap.c		\
+	intel_media_common.c		\
 	$(NULL)
 
 source_h = \
@@ -79,6 +87,8 @@ source_h = \
 	gen6_mfd.h		\
 	gen6_vme.h		\
 	gen7_mfd.h		\
+	gen75_picture_process.h	\
+	gen75_vpp_gpe.h 	\
 	gen75_vpp_vebox.h	\
 	i965_avc_bsd.h		\
 	i965_avc_hw_scoreboard.h\
@@ -88,10 +98,12 @@ source_h = \
 	i965_defines.h          \
 	i965_drv_video.h        \
 	i965_encoder.h		\
+	i965_encoder_utils.h	\
 	i965_media.h            \
 	i965_media_h264.h	\
 	i965_media_mpeg2.h      \
 	i965_mutext.h		\
+	i965_gpe_utils.h	\
 	i965_post_processing.h	\
 	i965_render.h           \
 	i965_structs.h		\
@@ -99,6 +111,7 @@ source_h = \
 	intel_batchbuffer_dump.h\
 	intel_compiler.h	\
 	intel_driver.h          \
+	intel_media.h           \
 	intel_memman.h          \
 	object_heap.h           \
 	sysdeps.h		\

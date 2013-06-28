@@ -76,15 +76,17 @@ struct i965_render_state
     int pp_flag; /* 0: disable, 1: enable */
 
     struct i965_kernel render_kernels[3];
+    
+    int max_wm_threads;
 };
 
-Bool i965_render_init(VADriverContextP ctx);
-Bool i965_render_terminate(VADriverContextP ctx);
+bool i965_render_init(VADriverContextP ctx);
+void i965_render_terminate(VADriverContextP ctx);
 
 void
 intel_render_put_surface(
     VADriverContextP   ctx,
-    VASurfaceID        surface,
+    struct object_surface *obj_surface,
     const VARectangle *src_rect,
     const VARectangle *dst_rect,
     unsigned int       flags
@@ -93,9 +95,14 @@ intel_render_put_surface(
 void
 intel_render_put_subpicture(
     VADriverContextP   ctx,
-    VASurfaceID        surface,
+    struct object_surface *obj_surface,
     const VARectangle *src_rect,
     const VARectangle *dst_rect
 );
+
+struct gen7_surface_state;
+
+void
+gen7_render_set_surface_scs(struct gen7_surface_state *ss);
 
 #endif /* _I965_RENDER_H_ */

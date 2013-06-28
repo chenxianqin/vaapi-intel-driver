@@ -29,29 +29,39 @@
 #ifndef __I965_POST_PROCESSING_H__
 #define __I965_POST_PROCESSING_H__
 
-#define MAX_PP_SURFACES 32
+#define MAX_PP_SURFACES                 48
 
-#define I965_PP_FLAG_TOP_FIELD         0x00000001
-#define I965_PP_FLAG_BOTTOM_FIELD      0x00000002
-
-#define I965_PP_FLAG_SCALING           0x00000010
-#define I965_PP_FLAG_AVS               0x00000020
-#define I965_PP_FLAG_DEINTERLACING     0x00000100 /* XXX: don't support MCDI yet */
-#define I965_PP_FLAG_DENOISE           0x00000200
+#define I965_PP_FLAG_TOP_FIELD          1
+#define I965_PP_FLAG_BOTTOM_FIELD       2
+#define I965_PP_FLAG_MCDI               4
+#define I965_PP_FLAG_AVS                8
 
 enum
 {
     PP_NULL = 0,
-    PP_NV12_LOAD_SAVE,
+    PP_NV12_LOAD_SAVE_N12,
+    PP_NV12_LOAD_SAVE_PL3,
+    PP_PL3_LOAD_SAVE_N12,
+    PP_PL3_LOAD_SAVE_PL3,
     PP_NV12_SCALING,
     PP_NV12_AVS,
     PP_NV12_DNDI,
+    PP_NV12_DN,
+    PP_NV12_LOAD_SAVE_PA,
+    PP_PL3_LOAD_SAVE_PA,
+    PP_PA_LOAD_SAVE_NV12,
+    PP_PA_LOAD_SAVE_PL3,
+    PP_RGBX_LOAD_SAVE_NV12,
+    PP_NV12_LOAD_SAVE_RGBX,
+    NUM_PP_MODULES,
 };
 
-#define NUM_PP_MODULES                  5
+struct i965_post_processing_context;
 
 struct pp_load_save_context
 {
+    int dest_x;
+    int dest_y;
     int dest_w;
     int dest_h;
 };
@@ -62,8 +72,8 @@ struct pp_scaling_context
     int dest_y; /* in pixel */
     int dest_w;
     int dest_h;
-    int src_normalized_x;
-    int src_normalized_y;
+    float src_normalized_x;
+    float src_normalized_y;
 };
 
 struct pp_avs_context
@@ -72,10 +82,11 @@ struct pp_avs_context
     int dest_y; /* in pixel */
     int dest_w;
     int dest_h;
-    int src_normalized_x;
-    int src_normalized_y;
+    float src_normalized_x;
+    float src_normalized_y;
     int src_w;
     int src_h;
+    float horiz_range;
 };
 
 struct pp_dndi_context
@@ -84,14 +95,25 @@ struct pp_dndi_context
     int dest_h;
 };
 
+struct pp_dn_context
+{
+    int dest_w;
+    int dest_h;
+};
+
+struct i965_post_processing_context;
+ 
 struct pp_module
 {
     struct i965_kernel kernel;
     
     /* others */
-    void (*initialize)(VADriverContextP ctx, 
-                       VASurfaceID in_surface_id, VASurfaceID out_surface_id,
-                       const VARectangle *src_rect, const VARectangle *dst_rect);
+    VAStatus (*initialize)(VADriverContextP ctx, struct i965_post_processing_context *pp_context,
+                           const struct i965_surface *src_surface,
+                           const VARectangle *src_rect,
+                           struct i965_surface *dst_surface,
+                           const VARectangle *dst_rect,
+                           void *filter_param);
 };
 
 struct pp_static_parameter
@@ -104,7 +126,7 @@ struct pp_static_parameter
         unsigned int source_packed_y_offset:8;
         unsigned int source_packed_u_offset:8;
         unsigned int source_packed_v_offset:8;
-        unsigned int pad0:8;
+        unsigned int source_rgb_layout:8;       // 1 for |R|G|B|X| layout, 0 for |B|G|R|X| layout
 
         union {
             /* Load and Save r1.2 */
@@ -117,8 +139,8 @@ struct pp_static_parameter
 
             /* CSC r1.2 */
             struct {
-                unsigned int destination_rgb_format:8;
                 unsigned int pad0:24;
+                unsigned int destination_rgb_layout:8;  // 1 for |R|G|B|X| layout, 0 for |B|G|R|X| layout
             } csc;
         } r1_2;
         
@@ -281,6 +303,9 @@ struct pp_inline_parameter
         unsigned int block_count_x:8;
 
         /* r5.6 */
+        /* we only support M*1 or 1*N block partitation now.
+         *   -- it means asm code only need update this mask from grf6 for the last block 
+         */
         unsigned int block_horizontal_mask:16;
         unsigned int block_vertical_mask:8;
         unsigned int number_blocks:8;
@@ -293,30 +318,130 @@ struct pp_inline_parameter
         /* AVS r6.0 */
         float video_step_delta;
 
-        /* r6.1-r6.7 */
+        /* r6.1 */    // sizeof(int) == 4?    
+        unsigned int block_horizontal_mask_right:16;
+        unsigned int block_vertical_mask_bottom:8;
+        unsigned int pad1:8;
+
+        /* r6.2 */
+        unsigned int block_horizontal_mask_middle:16;
+        unsigned int pad2:16;
+
+        /* r6.3-r6.7 */
+        unsigned int padx[5];
+    } grf6;
+};
+
+struct gen7_pp_static_parameter
+{
+    struct {
+        /* r1.0-r1.5 */
+        unsigned int padx[6];
+        /* r1.6 */
+        unsigned int di_statistics_surface_pitch_div2:16;
+        unsigned int di_statistics_surface_height_div4:16;
+        /* r1.7 */
+        unsigned int di_top_field_first:8;
+        unsigned int pad0:16;
+        unsigned int pointer_to_inline_parameter:8; /* value: 7 */
+    } grf1;
+
+    struct {
+        /* r2.0 */
+	/* Indicates whether the rgb is swapped for the src surface
+	 * 0: RGBX(MSB. X-B-G-R). 1: BGRX(MSB: X-R-G-B)
+	 */
+        unsigned int src_avs_rgb_swap:1;
+        unsigned int pad3:31;
+
+        /* r2.1 */
+        unsigned int pad2:16;
+        unsigned int save_avs_rgb_swap:1; /* 0: RGB, 1: BGR */
+        unsigned int avs_wa_enable:1; /* must enabled for GEN7 */
+        unsigned int ief_enable:1;
+        unsigned int avs_wa_width:13;
+
+        /* 2.2 */
+        float avs_wa_one_div_256_width;
+
+        /* 2.3 */
+        float avs_wa_five_div_256_width;
+        
+        /* 2.4 - 2.6 */
+        unsigned int padx[3];
+
+        /* r2.7 */
+        unsigned int di_destination_packed_y_component_offset:8;
+        unsigned int di_destination_packed_u_component_offset:8;
+        unsigned int di_destination_packed_v_component_offset:8;
+        unsigned int pad0:8;
+    } grf2;
+
+    struct {
+        float sampler_load_horizontal_scaling_step_ratio;
+        unsigned int padx[7];
+    } grf3;
+
+    struct {
+        float sampler_load_vertical_scaling_step;
+        unsigned int pad0;
+        unsigned int di_hoffset_svf_from_dvf:16;
+        unsigned int di_voffset_svf_from_dvf:16;
+        unsigned int padx[5];
+    } grf4;
+
+    struct {
+        float sampler_load_vertical_frame_origin;
+        unsigned int padx[7];
+    } grf5;
+
+    struct {
+        float sampler_load_horizontal_frame_origin;
         unsigned int padx[7];
     } grf6;
+};
+
+struct gen7_pp_inline_parameter
+{
+    struct {
+        /* r7.0 */
+        unsigned int destination_block_horizontal_origin:16;
+        unsigned int destination_block_vertical_origin:16;
+        /* r7.1: 0xffffffff */
+        unsigned int constant_0;
+        /* r7.2 */
+        unsigned int pad0;
+        /* r7.3 */
+        unsigned int pad1;
+        /* r7.4 */
+        float sampler_load_main_video_x_scaling_step;
+        /* r7.5 */
+        unsigned int pad2;
+        /* r7.6: must be zero */
+        unsigned int avs_vertical_block_number;
+        /* r7.7: 0 */
+        unsigned int group_id_number;
+    } grf7;
+
+    struct {
+        unsigned int padx[8];
+    } grf8;
 };
 
 struct i965_post_processing_context
 {
     int current_pp;
     struct pp_module pp_modules[NUM_PP_MODULES];
-    struct pp_static_parameter pp_static_parameter;
-    struct pp_inline_parameter pp_inline_parameter;
+    void *pp_static_parameter;
+    void *pp_inline_parameter;
+
+    struct {
+        dri_bo *bo;
+    } surface_state_binding_table;
 
     struct {
         dri_bo *bo;
     } curbe;
-
-    struct {
-        dri_bo *ss_bo;
-        dri_bo *s_bo;
-    } surfaces[MAX_PP_SURFACES];
-
-    struct {
-        dri_bo *bo;
-    } binding_table;
 
     struct {
         dri_bo *bo;
@@ -355,29 +480,56 @@ struct i965_post_processing_context
         struct pp_scaling_context pp_scaling_context;
         struct pp_avs_context pp_avs_context;
         struct pp_dndi_context pp_dndi_context;
+        struct pp_dn_context pp_dn_context;
     } private_context;
 
     int (*pp_x_steps)(void *private_context);
     int (*pp_y_steps)(void *private_context);
     int (*pp_set_block_parameter)(struct i965_post_processing_context *pp_context, int x, int y);
- 
-    /* video process based on hsw vebox */ 
-    struct intel_vebox_context *pp_vebox_context;
+
+    struct intel_batchbuffer *batch;
+
+    unsigned int block_horizontal_mask_left:16;
+    unsigned int block_horizontal_mask_right:16;
+    unsigned int block_vertical_mask_bottom:8;
+};
+
+struct i965_proc_context
+{
+    struct hw_context base;
+    struct i965_post_processing_context pp_context;
 };
 
 VASurfaceID
 i965_post_processing(
     VADriverContextP   ctx,
-    VASurfaceID        surface,
+    struct object_surface *obj_surface,
     const VARectangle *src_rect,
     const VARectangle *dst_rect,
     unsigned int       flags,
     int                *has_done_scaling 
 );
 
-Bool
+VAStatus
+i965_scaling_processing(
+    VADriverContextP   ctx,
+    struct object_surface *src_surface_obj,
+    const VARectangle *src_rect,
+    struct object_surface *dst_surface_obj,
+    const VARectangle *dst_rect,
+    unsigned int       flags
+);
+
+VAStatus
+i965_image_processing(VADriverContextP ctx,
+                      const struct i965_surface *src_surface,
+                      const VARectangle *src_rect,
+                      struct i965_surface *dst_surface,
+                      const VARectangle *dst_rect);
+
+void
 i965_post_processing_terminate(VADriverContextP ctx);
-Bool
+bool
 i965_post_processing_init(VADriverContextP ctx);
 
 #endif /* __I965_POST_PROCESSING_H__ */

@@ -54,6 +54,25 @@ send (8) msg_ind INEP_ROW<1>:UB null read(BIND_IDX_INEP, 0, 0, 4) mlen 1 rlen 1 
 mov  (8) msg_reg0.0<1>:UD       read1_header.0<8,8,1>:UD {align1};                
 send (8) msg_ind INEP_COL0<1>:UB null read(BIND_IDX_INEP, 0, 0, 4) mlen 1 rlen 2 {align1};
         
+/*
+ * Media Read Message -- fetch Chroma neighbor edge pixels 
+ */
+/* ROW */
+shl  (2) read0_header.0<1>:D    orig_xy_ub<2,2,1>:UB 3:UW {align1};    /* x * 16 , y * 8 */
+mul  (1) read0_header.0<1>:D    read0_header.0<0,1,0>:D  2:W {align1};
+add  (1) read0_header.0<1>:D    read0_header.0<0,1,0>:D -8:W {align1};     /* X offset */
+add  (1) read0_header.4<1>:D    read0_header.4<0,1,0>:D -1:W {align1};     /* Y offset */ 
+mov  (8) msg_reg0.0<1>:UD       read0_header.0<8,8,1>:UD {align1};        
+send (8) msg_ind CHROMA_ROW<1>:UB null read(BIND_IDX_CBCR, 0, 0, 4) mlen 1 rlen 1 {align1};
+
+/* COL */
+shl  (2) read1_header.0<1>:D    orig_xy_ub<2,2,1>:UB 3:UW {align1};    /* x * 16, y * 8 */
+mul  (1) read1_header.0<1>:D    read1_header.0<0,1,0>:D  2:W {align1};
+add  (1) read1_header.0<1>:D    read1_header.0<0,1,0>:D -4:W {align1};     /* X offset */
+mov  (1) read1_header.8<1>:UD   BLOCK_8X4 {align1};
+mov  (8) msg_reg0.0<1>:UD       read1_header.0<8,8,1>:UD {align1};                
+send (8) msg_ind CHROMA_COL<1>:UB null read(BIND_IDX_CBCR, 0, 0, 4) mlen 1 rlen 1 {align1};
+
 /* m2, get the MV/Mb cost passed by constant buffer 
 when creating EU thread by MEDIA_OBJECT */       
 mov (8) vme_msg_2<1>:UD         r1.0<8,8,1>:UD {align1};
@@ -73,18 +92,20 @@ mov  (1) vme_msg_5.16<1>:UD      INTRA_PREDICTORE_MODE {align1};
 
 /* the penalty for Intra mode */
 mov  (1) vme_msg_5.28<1>:UD	0x010101:UD {align1};
+mov  (1) vme_msg_5.20<1>:UW      CHROMA_ROW.6<0,1,0>:UW {align1};
 
 
 /* m6 */
 
-mov (8) vme_msg_6<1>:UD		0x0:UD {align1};	        
+mov  (4) vme_msg_6.16<1>:UD      CHROMA_ROW.8<4,4,1>:UD {align1};
+mov  (8) vme_msg_6.0<1>:UW       CHROMA_COL.2<16,8,2>:UW {align1};
 
 /*
  * VME message
  */
 /* m0 */        
 mov  (8) vme_msg_0.0<1>:UD      vme_m0.0<8,8,1>:UD {align1};
-mov  (1) tmp_reg0.0<1>:UW	LUMA_INTRA_MODE:UW {align1};
+mov  (1) tmp_reg0.0<1>:UW	LUMA_CHROMA_MODE:UW {align1};
 /* Use the Luma mode */
 mov  (1) vme_msg_4.5<1>:UB	tmp_reg0.0<0,1,0>:UB {align1};
 
@@ -95,7 +116,6 @@ and.z.f0.0 (1) null<1>:UW transform_8x8_ub<0,1,0>:UB 1:UW {align1};
 
 /* assign MB intra struct from the thread payload*/
 mov (1) mb_intra_struct_ub<1>:UB input_mb_intra_ub<0,1,0>:UB {align1}; 
- 
 /* Disable DC HAAR component when calculating HARR SATD block */
 mov  (1) tmp_reg0.0<1>:UW	DC_HARR_DISABLE:UW		{align1};
 mov  (1) vme_m1.30<1>:UB	tmp_reg0.0<0,1,0>:UB  {align1};
