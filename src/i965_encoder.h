@@ -39,10 +39,12 @@
 struct intel_encoder_context
 {
     struct hw_context base;
-    VAProfile profile;
+    int codec;
     VASurfaceID input_yuv_surface;
     int is_tmp_id;
     unsigned int rate_control_mode;
+    unsigned int quality_level;
+    unsigned int quality_range;
     void *vme_context;
     void *mfc_context;
     void (*vme_context_destroy)(void *vme_context);
@@ -62,6 +64,8 @@ struct intel_encoder_context
 extern struct hw_context *
 gen75_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config);
 
+extern struct hw_context *
+gen8_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config);
 #endif	/* _I965_ENCODER_H_ */
 
 

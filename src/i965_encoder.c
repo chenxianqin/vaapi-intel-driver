@@ -44,18 +44,6 @@ extern Bool gen6_mfc_context_init(VADriverContextP ctx, struct intel_encoder_con
 extern Bool gen6_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
 extern Bool gen7_mfc_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
 
-VAStatus 
-i965_DestroySurfaces(VADriverContextP ctx,
-                     VASurfaceID *surface_list,
-                     int num_surfaces);
-VAStatus 
-i965_CreateSurfaces(VADriverContextP ctx,
-                    int width,
-                    int height,
-                    int format,
-                    int num_surfaces,
-                    VASurfaceID *surfaces);
-
 static VAStatus
 intel_encoder_check_yuv_surface(VADriverContextP ctx,
                                 VAProfile profile,
@@ -81,7 +69,7 @@ intel_encoder_check_yuv_surface(VADriverContextP ctx,
     if (!obj_surface || !obj_surface->bo)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
 
-    if (obj_surface->fourcc == VA_FOURCC('N', 'V', '1', '2')) {
+    if (obj_surface->fourcc == VA_FOURCC_NV12) {
         unsigned int tiling = 0, swizzle = 0;
 
         dri_bo_get_tiling(obj_surface->bo, &tiling, &swizzle);
@@ -116,7 +104,7 @@ intel_encoder_check_yuv_surface(VADriverContextP ctx,
     obj_surface = SURFACE(encoder_context->input_yuv_surface);
     encode_state->input_yuv_object = obj_surface;
     assert(obj_surface);
-    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC('N', 'V', '1', '2'), SUBSAMPLE_YUV420);
+    i965_check_alloc_surface_bo(ctx, obj_surface, 1, VA_FOURCC_NV12, SUBSAMPLE_YUV420);
     
     dst_surface.base = (struct object_base *)obj_surface;
     dst_surface.type = I965_SURFACE_TYPE_SURFACE;
@@ -132,6 +120,30 @@ intel_encoder_check_yuv_surface(VADriverContextP ctx,
     encoder_context->is_tmp_id = 1;
 
     return VA_STATUS_SUCCESS;
+}
+
+static VAStatus
+intel_encoder_check_misc_parameter(VADriverContextP ctx,
+                                  struct encode_state *encode_state,
+                                  struct intel_encoder_context *encoder_context)
+{
+
+    if (encode_state->misc_param[VAEncMiscParameterTypeQualityLevel] &&
+        encode_state->misc_param[VAEncMiscParameterTypeQualityLevel]->buffer) {
+        VAEncMiscParameterBuffer* pMiscParam = (VAEncMiscParameterBuffer*)encode_state->misc_param[VAEncMiscParameterTypeQualityLevel]->buffer;
+        VAEncMiscParameterBufferQualityLevel* param_quality_level = (VAEncMiscParameterBufferQualityLevel*)pMiscParam->data;
+        encoder_context->quality_level = param_quality_level->quality_level;
+
+        if (encoder_context->quality_level == 0)
+            encoder_context->quality_level = ENCODER_DEFAULT_QUALITY;
+        else if (encoder_context->quality_level > encoder_context->quality_range)
+            goto error;
+   }
+
+    return VA_STATUS_SUCCESS;
+
+error:
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
 }
 
 static VAStatus
@@ -267,9 +279,11 @@ intel_encoder_sanity_check_input(VADriverContextP ctx,
     VAStatus vaStatus;
 
     switch (profile) {
-    case VAProfileH264Baseline:
+    case VAProfileH264ConstrainedBaseline:
     case VAProfileH264Main:
     case VAProfileH264High:
+    case VAProfileH264MultiviewHigh:
+    case VAProfileH264StereoHigh:
         vaStatus = intel_encoder_check_avc_parameter(ctx, encode_state, encoder_context);
         break;
 
@@ -287,6 +301,9 @@ intel_encoder_sanity_check_input(VADriverContextP ctx,
         goto out;
 
     vaStatus = intel_encoder_check_yuv_surface(ctx, profile, encode_state, encoder_context);
+
+    if (vaStatus == VA_STATUS_SUCCESS)
+        vaStatus = intel_encoder_check_misc_parameter(ctx, encode_state, encoder_context);
 
 out:    
     return vaStatus;
@@ -345,11 +362,43 @@ intel_enc_hw_context_init(VADriverContextP ctx,
     encoder_context->input_yuv_surface = VA_INVALID_SURFACE;
     encoder_context->is_tmp_id = 0;
     encoder_context->rate_control_mode = VA_RC_NONE;
-    encoder_context->profile = obj_config->profile;
+    encoder_context->quality_level = ENCODER_DEFAULT_QUALITY;
+    encoder_context->quality_range = 1;
+
+    switch (obj_config->profile) {
+    case VAProfileMPEG2Simple:
+    case VAProfileMPEG2Main:
+        encoder_context->codec = CODEC_MPEG2;
+        break;
+        
+    case VAProfileH264ConstrainedBaseline:
+    case VAProfileH264Main:
+    case VAProfileH264High:
+        encoder_context->codec = CODEC_H264;
+        encoder_context->quality_range = ENCODER_QUALITY_RANGE;
+        break;
+
+    case VAProfileH264StereoHigh:
+    case VAProfileH264MultiviewHigh:
+        encoder_context->codec = CODEC_H264_MVC;
+        break;
+
+    default:
+        /* Never get here */
+        assert(0);
+        break;
+    }
 
     for (i = 0; i < obj_config->num_attribs; i++) {
         if (obj_config->attrib_list[i].type == VAConfigAttribRateControl) {
             encoder_context->rate_control_mode = obj_config->attrib_list[i].value;
+
+            if (encoder_context->codec == CODEC_MPEG2 &&
+                encoder_context->rate_control_mode & VA_RC_CBR) {
+                WARN_ONCE("Don't support CBR for MPEG-2 encoding\n");
+                encoder_context->rate_control_mode &= ~VA_RC_CBR;
+            }
+
             break;
         }
     }
@@ -376,6 +425,7 @@ gen6_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config)
 struct hw_context *
 gen7_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config)
 {
+
     return intel_enc_hw_context_init(ctx, obj_config, gen7_vme_context_init, gen7_mfc_context_init);
 }
 
@@ -384,3 +434,10 @@ gen75_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config
 {
     return intel_enc_hw_context_init(ctx, obj_config, gen75_vme_context_init, gen75_mfc_context_init);
 }
+
+struct hw_context *
+gen8_enc_hw_context_init(VADriverContextP ctx, struct object_config *obj_config)
+{
+    return intel_enc_hw_context_init(ctx, obj_config, gen8_vme_context_init, gen8_mfc_context_init);
+}
+

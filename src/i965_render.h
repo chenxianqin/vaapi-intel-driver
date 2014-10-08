@@ -33,6 +33,8 @@
 
 #define NUM_RENDER_KERNEL       3
 
+#define VA_SRC_COLOR_MASK       0x000000f0
+
 #include "i965_post_processing.h"
 
 struct i965_kernel;
@@ -77,7 +79,51 @@ struct i965_render_state
 
     struct i965_kernel render_kernels[3];
     
-    int max_wm_threads;
+    struct {
+        dri_bo *bo;
+        int bo_size;
+        unsigned int end_offset;
+    } instruction_state;
+
+    struct {
+        dri_bo *bo;
+    } indirect_state;
+
+    struct {
+        dri_bo *bo;
+        int bo_size;
+        unsigned int end_offset;
+    } dynamic_state;
+
+    unsigned int curbe_offset;
+    int curbe_size;
+
+    unsigned int sampler_offset;
+    int sampler_size;
+
+    unsigned int cc_viewport_offset;
+    int cc_viewport_size;
+
+    unsigned int cc_state_offset;
+    int cc_state_size;
+
+    unsigned int blend_state_offset;
+    int blend_state_size;
+  
+    unsigned int sf_clip_offset;
+    int sf_clip_size;
+
+    unsigned int scissor_offset;
+    int scissor_size;
+
+    void (*render_put_surface)(VADriverContextP ctx, struct object_surface *,
+                               const VARectangle *src_rec,
+                               const VARectangle *dst_rect,
+                               unsigned int flags);
+    void (*render_put_subpicture)(VADriverContextP ctx, struct object_surface *,
+                               const VARectangle *src_rec,
+                               const VARectangle *dst_rect);
+    void (*render_terminate)(VADriverContextP ctx);
 };
 
 bool i965_render_init(VADriverContextP ctx);
@@ -104,5 +150,11 @@ struct gen7_surface_state;
 
 void
 gen7_render_set_surface_scs(struct gen7_surface_state *ss);
+
+struct gen8_surface_state;
+void
+gen8_render_set_surface_scs(struct gen8_surface_state *ss);
+
+extern bool gen8_render_init(VADriverContextP ctx);
 
 #endif /* _I965_RENDER_H_ */

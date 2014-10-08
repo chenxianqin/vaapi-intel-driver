@@ -60,7 +60,7 @@ i965_media_urb_layout(VADriverContextP ctx, struct i965_media_context *media_con
     unsigned int vfe_fence, cs_fence;
 
     vfe_fence = media_context->urb.cs_start;
-    cs_fence = URB_SIZE((&i965->intel));
+    cs_fence = i965->intel.device_info->urb_size;
 
     BEGIN_BATCH(batch, 3);
     OUT_BATCH(batch, CMD_URB_FENCE | UF0_VFE_REALLOC | UF0_CS_REALLOC | 1);
@@ -77,7 +77,7 @@ i965_media_state_base_address(VADriverContextP ctx, struct i965_media_context *m
     struct i965_driver_data *i965 = i965_driver_data(ctx); 
     struct intel_batchbuffer *batch = media_context->base.batch;
 
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         BEGIN_BATCH(batch, 8);
         OUT_BATCH(batch, CMD_STATE_BASE_ADDRESS | 6);
         OUT_BATCH(batch, 0 | BASE_ADDRESS_MODIFY);
@@ -257,7 +257,7 @@ i965_media_decode_init(VADriverContextP ctx,
         i965_media_mpeg2_decode_init(ctx, decode_state, media_context);
         break;
         
-    case VAProfileH264Baseline:
+    case VAProfileH264ConstrainedBaseline:
     case VAProfileH264Main:
     case VAProfileH264High:
         i965_media_h264_decode_init(ctx, decode_state, media_context);
@@ -348,7 +348,7 @@ g4x_dec_hw_context_init(VADriverContextP ctx, struct object_config *obj_config)
         i965_media_mpeg2_dec_context_init(ctx, media_context);
         break;
 
-    case VAProfileH264Baseline:
+    case VAProfileH264ConstrainedBaseline:
     case VAProfileH264Main:
     case VAProfileH264High:
         i965_media_h264_dec_context_init(ctx, media_context);
@@ -381,7 +381,7 @@ ironlake_dec_hw_context_init(VADriverContextP ctx, struct object_config *obj_con
         i965_media_mpeg2_dec_context_init(ctx, media_context);
         break;
 
-    case VAProfileH264Baseline:
+    case VAProfileH264ConstrainedBaseline:
     case VAProfileH264Main:
     case VAProfileH264High:
         i965_media_h264_dec_context_init(ctx, media_context);

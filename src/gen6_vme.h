@@ -62,30 +62,43 @@ struct gen6_vme_context
 
 
     void (*vme_surface2_setup)(VADriverContextP ctx,
-                                struct i965_gpe_context *gpe_context,
-                                struct object_surface *obj_surface,
-                                unsigned long binding_table_offset,
-                                unsigned long surface_state_offset);
+                               struct i965_gpe_context *gpe_context,
+                               struct object_surface *obj_surface,
+                               unsigned long binding_table_offset,
+                               unsigned long surface_state_offset);
     void (*vme_media_rw_surface_setup)(VADriverContextP ctx,
-                                            struct i965_gpe_context *gpe_context,
-                                            struct object_surface *obj_surface,
-                                            unsigned long binding_table_offset,
-                                            unsigned long surface_state_offset);
+                                       struct i965_gpe_context *gpe_context,
+                                       struct object_surface *obj_surface,
+                                       unsigned long binding_table_offset,
+                                       unsigned long surface_state_offset);
     void (*vme_buffer_suface_setup)(VADriverContextP ctx,
                                     struct i965_gpe_context *gpe_context,
                                     struct i965_buffer_surface *buffer_surface,
                                     unsigned long binding_table_offset,
                                     unsigned long surface_state_offset);
     void (*vme_media_chroma_surface_setup)(VADriverContextP ctx,
-                                            struct i965_gpe_context *gpe_context,
-                                            struct object_surface *obj_surface,
-                                            unsigned long binding_table_offset,
-                                            unsigned long surface_state_offset);
+                                           struct i965_gpe_context *gpe_context,
+                                           struct object_surface *obj_surface,
+                                           unsigned long binding_table_offset,
+                                           unsigned long surface_state_offset);
     void *vme_state_message;
     unsigned int h264_level;
     unsigned int video_coding_type;
     unsigned int vme_kernel_sum;
+    unsigned int mpeg2_level;
+
+    struct object_surface *used_reference_objects[2];
+    void *used_references[2];
+    unsigned int ref_index_in_mb[2];
 };
+
+#define MPEG2_PIC_WIDTH_HEIGHT	30
+#define	MPEG2_MV_RANGE		29
+#define	MPEG2_LEVEL_MASK	0x0f
+#define	MPEG2_LEVEL_LOW		0x0a
+#define	MPEG2_LEVEL_MAIN	0x08
+#define	MPEG2_LEVEL_HIGH	0x04
+
 
 Bool gen75_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
 
@@ -128,13 +141,38 @@ Bool gen7_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *e
 
 extern void
 gen7_vme_walker_fill_vme_batchbuffer(VADriverContextP ctx, 
-                              struct encode_state *encode_state,
-                              int mb_width, int mb_height,
-                              int kernel,
-                              int transform_8x8_mode_flag,
-                              struct intel_encoder_context *encoder_context);
+                                     struct encode_state *encode_state,
+                                     int mb_width, int mb_height,
+                                     int kernel,
+                                     int transform_8x8_mode_flag,
+                                     struct intel_encoder_context *encoder_context);
 
 extern void 
 gen7_vme_scoreboard_init(VADriverContextP ctx, struct gen6_vme_context *vme_context);
 
+extern void
+intel_vme_mpeg2_state_setup(VADriverContextP ctx,
+                            struct encode_state *encode_state,
+                            struct intel_encoder_context *encoder_context);
+
+extern void
+gen7_vme_mpeg2_walker_fill_vme_batchbuffer(VADriverContextP ctx, 
+                                           struct encode_state *encode_state,
+                                           int mb_width, int mb_height,
+                                           int kernel,
+                                           struct intel_encoder_context *encoder_context);
+
+void
+intel_avc_vme_reference_state(VADriverContextP ctx,
+                              struct encode_state *encode_state,
+                              struct intel_encoder_context *encoder_context,
+                              int list_index,
+                              int surface_index,
+                              void (* vme_source_surface_state)(
+                                  VADriverContextP ctx,
+                                  int index,
+                                  struct object_surface *obj_surface,
+                                  struct intel_encoder_context *encoder_context));
+
+extern Bool gen8_vme_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
 #endif /* _GEN6_VME_H_ */

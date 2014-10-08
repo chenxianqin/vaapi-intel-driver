@@ -51,6 +51,7 @@ i965_avc_bsd_init_avc_bsd_surface(VADriverContextP ctx,
 
     if (!avc_bsd_surface) {
         avc_bsd_surface = calloc(sizeof(GenAvcSurface), 1);
+        avc_bsd_surface->frame_store_id = -1;
         assert((obj_surface->size & 0x3f) == 0);
         obj_surface->private_data = avc_bsd_surface;
     }
@@ -388,7 +389,7 @@ i965_avc_bsd_buf_base_state(VADriverContextP ctx,
 {
     struct intel_batchbuffer *batch = i965_h264_context->batch;
     struct i965_avc_bsd_context *i965_avc_bsd_context;
-    int i, j;
+    int i;
     VAPictureH264 *va_pic;
     struct object_surface *obj_surface;
     GenAvcSurface *avc_bsd_surface;
@@ -418,24 +419,8 @@ i965_avc_bsd_buf_base_state(VADriverContextP ctx,
         OUT_BCS_BATCH(batch, 0);
 
     for (i = 0; i < ARRAY_ELEMS(i965_h264_context->fsid_list); i++) {
-        if (i965_h264_context->fsid_list[i].surface_id != VA_INVALID_ID &&
-            i965_h264_context->fsid_list[i].obj_surface &&
-            i965_h264_context->fsid_list[i].obj_surface->private_data) {
-            int found = 0;
-            for (j = 0; j < ARRAY_ELEMS(pic_param->ReferenceFrames); j++) {
-                va_pic = &pic_param->ReferenceFrames[j];
-                
-                if (va_pic->flags & VA_PICTURE_H264_INVALID)
-                    continue;
-
-                if (va_pic->picture_id == i965_h264_context->fsid_list[i].surface_id) {
-                    found = 1;
-                    break;
-                }
-            }
-
-            assert(found == 1);
-            obj_surface = i965_h264_context->fsid_list[i].obj_surface;
+        obj_surface = i965_h264_context->fsid_list[i].obj_surface;
+        if (obj_surface && obj_surface->private_data) {
             avc_bsd_surface = obj_surface->private_data;
             
             OUT_BCS_RELOC(batch, avc_bsd_surface->dmv_top,
@@ -458,9 +443,11 @@ i965_avc_bsd_buf_base_state(VADriverContextP ctx,
 
     va_pic = &pic_param->CurrPic;
     obj_surface = decode_state->render_object;
-    obj_surface->flags &= ~SURFACE_REF_DIS_MASK;
-    obj_surface->flags |= (pic_param->pic_fields.bits.reference_pic_flag ? SURFACE_REFERENCED : 0);
-    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+    if (pic_param->pic_fields.bits.reference_pic_flag)
+        obj_surface->flags |= SURFACE_REFERENCED;
+    else
+        obj_surface->flags &= ~SURFACE_REFERENCED;
+    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC_NV12, SUBSAMPLE_YUV420);
 
     /* initial uv component for YUV400 case */
     if (pic_param->seq_fields.bits.chroma_format_idc == 0) {
@@ -490,26 +477,16 @@ i965_avc_bsd_buf_base_state(VADriverContextP ctx,
 
     /* POC List */
     for (i = 0; i < ARRAY_ELEMS(i965_h264_context->fsid_list); i++) {
-        if (i965_h264_context->fsid_list[i].surface_id != VA_INVALID_ID) {
-            int found = 0;
-            for (j = 0; j < ARRAY_ELEMS(pic_param->ReferenceFrames); j++) {
-                va_pic = &pic_param->ReferenceFrames[j];
-                
-                if (va_pic->flags & VA_PICTURE_H264_INVALID)
-                    continue;
+        obj_surface = i965_h264_context->fsid_list[i].obj_surface;
 
-                if (va_pic->picture_id == i965_h264_context->fsid_list[i].surface_id) {
-                    found = 1;
-                    break;
-                }
-            }
+        if (obj_surface) {
+            const VAPictureH264 * const va_pic = avc_find_picture(
+                obj_surface->base.id, pic_param->ReferenceFrames,
+                ARRAY_ELEMS(pic_param->ReferenceFrames));
 
-            assert(found == 1);
-
-            if (!(va_pic->flags & VA_PICTURE_H264_INVALID)) {
-                OUT_BCS_BATCH(batch, va_pic->TopFieldOrderCnt);
-                OUT_BCS_BATCH(batch, va_pic->BottomFieldOrderCnt);
-            } 
+            assert(va_pic != NULL);
+            OUT_BCS_BATCH(batch, va_pic->TopFieldOrderCnt);
+            OUT_BCS_BATCH(batch, va_pic->BottomFieldOrderCnt);
         } else {
             OUT_BCS_BATCH(batch, 0);
             OUT_BCS_BATCH(batch, 0);
@@ -803,7 +780,7 @@ i965_avc_bsd_object(VADriverContextP ctx,
 {
     struct i965_driver_data *i965 = i965_driver_data(ctx);
 
-    if (IS_IRONLAKE(i965->intel.device_id))
+    if (IS_IRONLAKE(i965->intel.device_info))
         ironlake_avc_bsd_object(ctx, decode_state, pic_param, slice_param, slice_index, i965_h264_context);
     else
         g4x_avc_bsd_object(ctx, decode_state, pic_param, slice_param, slice_index, i965_h264_context);
@@ -941,8 +918,8 @@ i965_avc_bsd_pipeline(VADriverContextP ctx, struct decode_state *decode_state, v
 
     assert(decode_state->pic_param && decode_state->pic_param->buffer);
     pic_param = (VAPictureParameterBufferH264 *)decode_state->pic_param->buffer;
-
-    intel_update_avc_frame_store_index(ctx, decode_state, pic_param, i965_h264_context->fsid_list);
+    intel_update_avc_frame_store_index(ctx, decode_state, pic_param,
+        i965_h264_context->fsid_list, &i965_h264_context->fs_ctx);
     i965_weight128_workaround(ctx,decode_state, h264_context);
 
     i965_h264_context->enable_avc_ildb = 0;

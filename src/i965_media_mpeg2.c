@@ -515,7 +515,7 @@ i965_media_mpeg2_surface_setup(VADriverContextP ctx,
     int w = obj_surface->width;
     int h = obj_surface->height;
 
-    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC('I','4','2','0'), SUBSAMPLE_YUV420);
+    i965_check_alloc_surface_bo(ctx, obj_surface, 0, VA_FOURCC_I420, SUBSAMPLE_YUV420);
 
     if (picture_structure == MPEG_FRAME) {
 	i965_media_mpeg2_surface_state(ctx, base_index + 0, obj_surface,
@@ -988,7 +988,7 @@ i965_media_mpeg2_dec_context_init(VADriverContextP ctx, struct i965_media_contex
                                      sizeof(mpeg2_vld_kernels_gen5[0])));
     assert(NUM_MPEG2_VLD_KERNELS <= MAX_INTERFACE_DESC);
 
-    if (IS_IRONLAKE(i965->intel.device_id))
+    if (IS_IRONLAKE(i965->intel.device_info))
         memcpy(i965_mpeg2_context->vld_kernels, mpeg2_vld_kernels_gen5, sizeof(i965_mpeg2_context->vld_kernels));
     else
         memcpy(i965_mpeg2_context->vld_kernels, mpeg2_vld_kernels_gen4, sizeof(i965_mpeg2_context->vld_kernels));
@@ -1013,7 +1013,7 @@ i965_media_mpeg2_dec_context_init(VADriverContextP ctx, struct i965_media_contex
     media_context->urb.cs_start = media_context->urb.vfe_start + 
         media_context->urb.num_vfe_entries * media_context->urb.size_vfe_entry;
     assert(media_context->urb.cs_start + 
-           media_context->urb.num_cs_entries * media_context->urb.size_cs_entry <= URB_SIZE((&i965->intel)));
+           media_context->urb.num_cs_entries * media_context->urb.size_cs_entry <= i965->intel.device_info->urb_size);
 
     /* hook functions */
     media_context->media_states_setup = i965_media_mpeg2_states_setup;

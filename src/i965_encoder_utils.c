@@ -233,13 +233,22 @@ slice_header(avc_bitstream *bs,
     
     /* slice type */
     if (IS_P_SLICE(slice_param->slice_type)) {
-        avc_bitstream_put_ui(bs, 0, 1);            /* num_ref_idx_active_override_flag: 0 */
+        avc_bitstream_put_ui(bs, slice_param->num_ref_idx_active_override_flag, 1);            /* num_ref_idx_active_override_flag: */
+
+        if (slice_param->num_ref_idx_active_override_flag)
+            avc_bitstream_put_ue(bs, slice_param->num_ref_idx_l0_active_minus1);
 
         /* ref_pic_list_reordering */
         avc_bitstream_put_ui(bs, 0, 1);            /* ref_pic_list_reordering_flag_l0: 0 */
     } else if (IS_B_SLICE(slice_param->slice_type)) {
         avc_bitstream_put_ui(bs, slice_param->direct_spatial_mv_pred_flag, 1);            /* direct_spatial_mv_pred: 1 */
-        avc_bitstream_put_ui(bs, 0, 1);            /* num_ref_idx_active_override_flag: 0 */
+
+        avc_bitstream_put_ui(bs, slice_param->num_ref_idx_active_override_flag, 1);       /* num_ref_idx_active_override_flag: */
+
+        if (slice_param->num_ref_idx_active_override_flag) {
+            avc_bitstream_put_ue(bs, slice_param->num_ref_idx_l0_active_minus1);
+            avc_bitstream_put_ue(bs, slice_param->num_ref_idx_l1_active_minus1);
+        }
 
         /* ref_pic_list_reordering */
         avc_bitstream_put_ui(bs, 0, 1);            /* ref_pic_list_reordering_flag_l0: 0 */
@@ -298,6 +307,7 @@ build_avc_slice_header(VAEncSequenceParameterBufferH264 *sps_param,
 {
     avc_bitstream bs;
     int is_idr = !!pic_param->pic_fields.bits.idr_pic_flag;
+    int is_ref = !!pic_param->pic_fields.bits.reference_pic_flag;
 
     avc_bitstream_start(&bs);
     nal_start_code_prefix(&bs);
@@ -305,10 +315,12 @@ build_avc_slice_header(VAEncSequenceParameterBufferH264 *sps_param,
     if (IS_I_SLICE(slice_param->slice_type)) {
         nal_header(&bs, NAL_REF_IDC_HIGH, is_idr ? NAL_IDR : NAL_NON_IDR);
     } else if (IS_P_SLICE(slice_param->slice_type)) {
-        nal_header(&bs, NAL_REF_IDC_MEDIUM, is_idr ? NAL_IDR : NAL_NON_IDR);
+        assert(!is_idr);
+        nal_header(&bs, NAL_REF_IDC_MEDIUM, NAL_NON_IDR);
     } else {
         assert(IS_B_SLICE(slice_param->slice_type));
-        nal_header(&bs, NAL_REF_IDC_NONE, is_idr ? NAL_IDR : NAL_NON_IDR);
+        assert(!is_idr);
+        nal_header(&bs, is_ref ? NAL_REF_IDC_LOW : NAL_REF_IDC_NONE, NAL_NON_IDR);
     }
 
     slice_header(&bs, sps_param, pic_param, slice_param);

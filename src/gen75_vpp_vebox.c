@@ -23,6 +23,7 @@
  *
  * Authors:
  *   Li Xiaowei <xiaowei.a.li@intel.com>
+ *   Li Zhong <zhong.li@intel.com>
  */
 
 #include <stdio.h>
@@ -52,18 +53,6 @@ i965_DeriveImage(VADriverContextP ctx, VABufferID surface, VAImage *out_image);
 extern VAStatus
 i965_DestroyImage(VADriverContextP ctx, VAImageID image);
 
-extern VAStatus
-i965_DestroySurfaces(VADriverContextP ctx,
-                     VASurfaceID *surface_list,
-                     int num_surfaces);
-
-extern VAStatus
-i965_CreateSurfaces(VADriverContextP ctx,
-                    int width,
-                    int height,
-                    int format,
-                    int num_surfaces,
-                    VASurfaceID *surfaces);
 
 VAStatus vpp_surface_convert(VADriverContextP ctx,
                              struct object_surface *src_obj_surf,
@@ -104,8 +93,8 @@ VAStatus vpp_surface_scaling(VADriverContextP ctx,
     VAStatus va_status = VA_STATUS_SUCCESS;
     int flags = I965_PP_FLAG_AVS;
 
-    assert(src_obj_surf->fourcc == VA_FOURCC('N','V','1','2'));
-    assert(dst_obj_surf->fourcc == VA_FOURCC('N','V','1','2'));
+    assert(src_obj_surf->fourcc == VA_FOURCC_NV12);
+    assert(dst_obj_surf->fourcc == VA_FOURCC_NV12);
 
     VARectangle src_rect, dst_rect;
     src_rect.x = 0;
@@ -130,9 +119,11 @@ VAStatus vpp_surface_scaling(VADriverContextP ctx,
 
 void hsw_veb_dndi_table(VADriverContextP ctx, struct intel_vebox_context *proc_ctx)
 {
+    struct i965_driver_data *i965 = i965_driver_data(ctx);
     unsigned int* p_table ;
     int progressive_dn = 1;
     int dndi_top_first = 0;
+    int motion_compensated_enable = 0;
 
     if (proc_ctx->filters_mask & VPP_DNDI_DI) {
         VAProcFilterParameterBufferDeinterlacing *di_param =
@@ -140,7 +131,8 @@ void hsw_veb_dndi_table(VADriverContextP ctx, struct intel_vebox_context *proc_c
         assert(di_param);
 
         progressive_dn = 0;
-        dndi_top_first = !(di_param->flags & VA_DEINTERLACING_BOTTOM_FIELD_FIRST);
+        dndi_top_first = !(di_param->flags & VA_DEINTERLACING_BOTTOM_FIELD);
+        motion_compensated_enable = (di_param->algorithm == VAProcDeinterlacingMotionCompensated);
     }
 
     /*
@@ -152,7 +144,9 @@ void hsw_veb_dndi_table(VADriverContextP ctx, struct intel_vebox_context *proc_c
     */
     p_table = (unsigned int *)proc_ctx->dndi_state_table.ptr;
 
-    *p_table ++ = 0;               // reserved  . w0
+     if (IS_HASWELL(i965->intel.device_info))
+         *p_table ++ = 0;               // reserved  . w0
+
     *p_table ++ = ( 140 << 24 |    // denoise STAD threshold . w1
                     192 << 16 |    // dnmh_history_max
                     0   << 12 |    // reserved
@@ -199,7 +193,7 @@ void hsw_veb_dndi_table(VADriverContextP ctx, struct intel_vebox_context *proc_c
                     100<< 16  |  // FMD #2 vertical difference th
                     0  << 14  |  // CAT th1
                     2  << 8   |  // FMD tear threshold
-                    0  << 7   |  // MCDI Enable, use motion compensated deinterlace algorithm
+                    motion_compensated_enable  << 7   |  // MCDI Enable, use motion compensated deinterlace algorithm
                     progressive_dn  << 6   |  // progressive DN
                     0  << 4   |  // reserved
                     dndi_top_first  << 3   |  // DN/DI Top First
@@ -222,6 +216,8 @@ void hsw_veb_dndi_table(VADriverContextP ctx, struct intel_vebox_context *proc_c
                     13 << 6   |  // chr temp diff th
                     7 );         // chr temp diff low
 
+    if (IS_GEN8(i965->intel.device_info))
+        *p_table ++ = 0;         // parameters for hot pixel, 
 }
 
 void hsw_veb_iecp_std_table(VADriverContextP ctx, struct intel_vebox_context *proc_ctx)
@@ -233,40 +229,179 @@ void hsw_veb_iecp_std_table(VADriverContextP ctx, struct intel_vebox_context *pr
     if(!(proc_ctx->filters_mask & VPP_IECP_STD_STE)){ 
         memset(p_table, 0, 29 * 4);
     }else{
-        *p_table ++ = 0x9a6e39f0;
-        *p_table ++ = 0x400c0000;
-        *p_table ++ = 0x00001180;
-        *p_table ++ = 0xfe2f2e00;
-        *p_table ++ = 0x000000ff;
+        //DWord 0
+        *p_table ++ = ( 154 << 24 |   // V_Mid
+                        110 << 16 |   // U_Mid
+                        14 << 10  |   // Hue_Max
+                        31 << 4   |   // Sat_Max
+                        0 << 3    |   // Reserved
+                        0 << 2    |   // Output Control is set to output the 1=STD score /0=Output Pixels
+                        1 << 1    |   // Set STE Enable
+                        1 );          // Set STD Enable
 
-        *p_table ++ = 0x00140000;
-        *p_table ++ = 0xd82e0000;
-        *p_table ++ = 0x8285ecec;
-        *p_table ++ = 0x00008282;
-        *p_table ++ = 0x00000000;
+        //DWord 1
+        *p_table ++ = ( 0 << 31   |   // Reserved
+                        4 << 28   |   // Diamond Margin
+                        0 << 21   |   // Diamond_du
+                        3 << 18   |   // HS_Margin
+                        79 << 10  |   // Cos(alpha)
+                        0 << 8    |   // Reserved
+                        101 );        // Sin(alpha)
 
-        *p_table ++ = 0x02117000;
-        *p_table ++ = 0xa38fec96;
-        *p_table ++ = 0x0000c8c8;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x01478000;
- 
-        *p_table ++ = 0x0007c306;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x1c1bd000;
-        *p_table ++ = 0x00000000;
+        //DWord 2
+        *p_table ++ = ( 0 << 21   |   // Reserved
+                        100 << 13 |   // Diamond_alpha
+                        35 << 7   |   // Diamond_Th
+                        0 );
 
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x0007cf80;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x00000000;
+        //DWord 3
+        *p_table ++ = ( 254 << 24 |   // Y_point_3
+                        47 << 16  |   // Y_point_2
+                        46 << 8   |   // Y_point_1
+                        1 << 7    |   // VY_STD_Enable
+                        0 );          // Reserved
 
-        *p_table ++ = 0x1c080000;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x00000000;
-        *p_table ++ = 0x00000000;
+        //DWord 4
+        *p_table ++ = ( 0 << 18   |   // Reserved
+                        31 << 13  |   // Y_slope_2
+                        31 << 8   |   // Y_slope_1
+                        255 );        // Y_point_4
+
+        //DWord 5
+        *p_table ++ = ( 400 << 16 |   // INV_Skin_types_margin = 20* Skin_Type_margin => 20*20
+                        3300 );       // INV_Margin_VYL => 1/Margin_VYL
+
+        //DWord 6
+        *p_table ++ = ( 216 << 24 |   // P1L
+                        46 << 16  |   // P0L
+                        1600 );       // INV_Margin_VYU
+
+        //DWord 7
+        *p_table ++ = ( 130 << 24 |   // B1L
+                        133 << 16 |   // B0L
+                        236 << 8  |   // P3L
+                        236 );        // P2L
+
+        //DWord 8
+        *p_table ++ = ( 0 << 27      |   // Reserved
+                        0x7FB << 16  |   // S0L (11 bits, Default value: -5 = FBh, pad it with 1s to make it 11bits)
+                        130 << 8     |   // B3L
+                        130 );
+
+        //DWord 9
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        0 << 11   |    // S2L
+                        0);            // S1L
+
+        //DWord 10
+        *p_table ++ = ( 0 << 27   |    // Reserved
+                        66 << 19  |    // P1U
+                        46 << 11  |    // P0U
+                        0 );           // S3
+
+        //DWord 11
+        *p_table ++ = ( 163 << 24 |    // B1U
+                        143 << 16 |    // B0U
+                        236 << 8  |    // P3U
+                        150 );         // P2U
+
+        //DWord 12
+        *p_table ++ = ( 0 << 27   |    // Reserved
+                        256 << 16 |    // S0U
+                        200 << 8  |    // B3U
+                        200 );         // B2U
+
+        //DWord 13
+        *p_table ++ = ( 0 << 22     |    // Reserved
+                        0x74D << 11 |    // S2U (11 bits, Default value -179 = F4Dh)
+                        113 );           // S1U
+
+        //DWoord 14
+        *p_table ++ = ( 0 << 28   |    // Reserved
+                        20 << 20  |    // Skin_types_margin
+                        120 << 12 |    // Skin_types_thresh
+                        1 << 11   |    // Skin_Types_Enable
+                        0 );           // S3U
+
+        //DWord 15
+        *p_table ++ = ( 0 << 31     |    // Reserved
+                        0x3F8 << 21 |    // SATB1 (10 bits, default 8, optimized value -8)
+                        31 << 14    |    // SATP3
+                        6 << 7      |    // SATP2
+                        0x7A );          // SATP1 (7 bits, default 6, optimized value -6)
+
+        //DWord 16
+        *p_table ++ = ( 0 << 31   |    // Reserved
+                        297 << 20 |    // SATS0
+                        124 << 10 |    // SATB3
+                        8 );           // SATB2
+
+        //DWord 17
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        297 << 11 |    // SATS2
+                        85 );          // SATS1
+
+        //DWord 18
+        *p_table ++ = ( 14 << 25    |    // HUEP3
+                        6 << 18     |    // HUEP2
+                        0x7A << 11  |    // HUEP1 (7 bits, default value -6 = 7Ah)
+                        256 );           // SATS3
+
+        //DWord 19
+        *p_table ++ = ( 0 << 30   |    // Reserved
+                        256 << 20 |    // HUEB3
+                        8 << 10   |    // HUEB2
+                        0x3F8 );       // HUEB1 (10 bits, default value 8, optimized value -8)
+
+        //DWord 20
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        85 << 11  |    // HUES1
+                        384 );         // HUES
+
+        //DWord 21
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        256 << 11 |    // HUES3
+                        384 );         // HUES2
+
+        //DWord 22
+        *p_table ++ = ( 0 << 31   |    // Reserved
+                        0 << 21   |    // SATB1_DARK
+                        31 << 14  |    // SATP3_DARK
+                        31 << 7   |    // SATP2_DARK
+                        0x7B );        // SATP1_DARK (7 bits, default value -11 = FF5h, optimized value -5)
+
+        //DWord 23
+        *p_table ++ = ( 0 << 31   |    // Reserved
+                        305 << 20 |    // SATS0_DARK
+                        124 << 10 |    // SATB3_DARK
+                        124 );         // SATB2_DARK
+
+        //DWord 24
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        256 << 11 |    // SATS2_DARK
+                        220 );         // SATS1_DARK
+
+        //DWord 25
+        *p_table ++ = ( 14 << 25  |    // HUEP3_DARK
+                        14 << 18  |    // HUEP2_DARK
+                        14 << 11  |    // HUEP1_DARK
+                        256 );         // SATS3_DARK
+
+        //DWord 26
+        *p_table ++ = ( 0 << 30   |    // Reserved
+                        56 << 20  |    // HUEB3_DARK
+                        56 << 10  |    // HUEB2_DARK
+                        56 );          // HUEB1_DARK
+
+        //DWord 27
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        256 << 11 |    // HUES1_DARK
+                        256 );         // HUES0_DARK
+
+        //DWord 28
+        *p_table ++ = ( 0 << 22   |    // Reserved
+                        256 << 11 |    // HUES3_DARK
+                        256 );         // HUES2_DARK
     }
 }
 
@@ -389,11 +524,11 @@ void hsw_veb_iecp_csc_table(VADriverContextP ctx, struct intel_vebox_context *pr
         return;
     }
 
-    if(proc_ctx->fourcc_input == VA_FOURCC('R','G','B','A') &&
-       (proc_ctx->fourcc_output == VA_FOURCC('N','V','1','2') ||
-        proc_ctx->fourcc_output == VA_FOURCC('Y','V','1','2') ||
-        proc_ctx->fourcc_output == VA_FOURCC('Y','V','Y','2') ||
-        proc_ctx->fourcc_output == VA_FOURCC('A','Y','U','V'))) {
+    if(proc_ctx->fourcc_input == VA_FOURCC_RGBA &&
+       (proc_ctx->fourcc_output == VA_FOURCC_NV12 ||
+        proc_ctx->fourcc_output == VA_FOURCC_YV12 ||
+        proc_ctx->fourcc_output == VA_FOURCC_YVY2 ||
+        proc_ctx->fourcc_output == VA_FOURCC_AYUV)) {
 
          tran_coef[0] = 0.257;
          tran_coef[1] = 0.504;
@@ -410,12 +545,11 @@ void hsw_veb_iecp_csc_table(VADriverContextP ctx, struct intel_vebox_context *pr
          u_coef[2] = 128 * 4;
  
          is_transform_enabled = 1; 
-    }else if((proc_ctx->fourcc_input  == VA_FOURCC('N','V','1','2') || 
-              proc_ctx->fourcc_input  == VA_FOURCC('Y','V','1','2') || 
-              proc_ctx->fourcc_input  == VA_FOURCC('Y','U','Y','2') ||
-              proc_ctx->fourcc_input  == VA_FOURCC('A','Y','U','V'))&&
-              proc_ctx->fourcc_output == VA_FOURCC('R','G','B','A')) {
-
+    }else if((proc_ctx->fourcc_input  == VA_FOURCC_NV12 ||
+              proc_ctx->fourcc_input  == VA_FOURCC_YV12 ||
+              proc_ctx->fourcc_input  == VA_FOURCC_YUY2 ||
+              proc_ctx->fourcc_input  == VA_FOURCC_AYUV) &&
+              proc_ctx->fourcc_output == VA_FOURCC_RGBA) {
          tran_coef[0] = 1.164;
          tran_coef[1] = 0.000;
          tran_coef[2] = 1.569;
@@ -543,7 +677,8 @@ void hsw_veb_state_command(VADriverContextP ctx, struct intel_vebox_context *pro
         if (di_param->algorithm == VAProcDeinterlacingBob)
             is_first_frame = 1;
 
-        if (di_param->algorithm == VAProcDeinterlacingMotionAdaptive &&
+        if ((di_param->algorithm == VAProcDeinterlacingMotionAdaptive ||
+            di_param->algorithm == VAProcDeinterlacingMotionCompensated) &&
             proc_ctx->frame_order != -1)
             di_output_frames_flag = 0; /* Output both Current Frame and Previous Frame */
     }
@@ -750,7 +885,7 @@ void hsw_veb_resource_prepare(VADriverContextP ctx,
     } 
 
     if(obj_surf_in->bo == NULL){
-          input_fourcc = VA_FOURCC('N','V','1','2');
+          input_fourcc = VA_FOURCC_NV12;
           input_sampling = SUBSAMPLE_YUV420;
           input_tiling = 0;
           i965_check_alloc_surface_bo(ctx, obj_surf_in, input_tiling, input_fourcc, input_sampling);
@@ -762,7 +897,7 @@ void hsw_veb_resource_prepare(VADriverContextP ctx,
     }
 
     if(obj_surf_out->bo == NULL){
-          output_fourcc = VA_FOURCC('N','V','1','2');
+          output_fourcc = VA_FOURCC_NV12;
           output_sampling = SUBSAMPLE_YUV420;
           output_tiling = 0;
           i965_check_alloc_surface_bo(ctx, obj_surf_out, output_tiling, output_fourcc, output_sampling);
@@ -844,8 +979,9 @@ void hsw_veb_resource_prepare(VADriverContextP ctx,
 
 }
 
-void hsw_veb_surface_reference(VADriverContextP ctx,
-                              struct intel_vebox_context *proc_ctx)
+static VAStatus
+hsw_veb_surface_reference(VADriverContextP ctx,
+                          struct intel_vebox_context *proc_ctx)
 {
     struct object_surface * obj_surf; 
     VEBFrameStore tmp_store;
@@ -870,7 +1006,8 @@ void hsw_veb_surface_reference(VADriverContextP ctx,
                 (VAProcFilterParameterBufferDeinterlacing *)proc_ctx->filter_di;
 
             if (di_param && 
-                di_param->algorithm == VAProcDeinterlacingMotionAdaptive) {
+                (di_param->algorithm == VAProcDeinterlacingMotionAdaptive ||
+                di_param->algorithm == VAProcDeinterlacingMotionCompensated)) {
                 if ((proc_ctx->filters_mask & VPP_DNDI_DN) &&
                     proc_ctx->frame_order == 0) { /* DNDI */
                     tmp_store = proc_ctx->frame_store[FRAME_OUT_CURRENT_DN];
@@ -880,9 +1017,14 @@ void hsw_veb_surface_reference(VADriverContextP ctx,
                     VAProcPipelineParameterBuffer *pipe = proc_ctx->pipeline_param;
                     struct object_surface *obj_surf = NULL;
                     struct i965_driver_data * const i965 = i965_driver_data(ctx);
-                
-                    assert(pipe->num_forward_references == 1);
-                    assert(pipe->forward_references[0] != VA_INVALID_ID);
+
+                    if (!pipe ||
+                        !pipe->num_forward_references ||
+                        pipe->forward_references[0] == VA_INVALID_ID) {
+                        WARN_ONCE("A forward temporal reference is needed for Motion adaptive/compensated deinterlacing !!!\n");
+
+                        return VA_STATUS_ERROR_INVALID_PARAMETER;
+                    }
 
                     obj_surf = SURFACE(pipe->forward_references[0]);
                     assert(obj_surf && obj_surf->bo);
@@ -919,7 +1061,8 @@ void hsw_veb_surface_reference(VADriverContextP ctx,
             (VAProcFilterParameterBufferDeinterlacing *)proc_ctx->filter_di;
 
         if (di_param && 
-            di_param->algorithm == VAProcDeinterlacingMotionAdaptive) {
+            (di_param->algorithm == VAProcDeinterlacingMotionAdaptive ||
+            di_param->algorithm == VAProcDeinterlacingMotionCompensated)) {
             if (proc_ctx->frame_order == -1) {
                 proc_ctx->frame_store[FRAME_OUT_CURRENT].surface_id = VA_INVALID_ID;
                 proc_ctx->frame_store[FRAME_OUT_CURRENT].is_internal_surface = 0;
@@ -946,6 +1089,8 @@ void hsw_veb_surface_reference(VADriverContextP ctx,
         proc_ctx->frame_store[FRAME_OUT_CURRENT].obj_surface = obj_surf;
         proc_ctx->current_output = FRAME_OUT_CURRENT;
     }
+
+    return VA_STATUS_SUCCESS;
 }
 
 void hsw_veb_surface_unreference(VADriverContextP ctx,
@@ -999,17 +1144,17 @@ int hsw_veb_pre_format_convert(VADriverContextP ctx,
     }
 
      /* convert the following format to NV12 format */
-     if(obj_surf_input->fourcc ==  VA_FOURCC('Y','V','1','2') ||
-        obj_surf_input->fourcc ==  VA_FOURCC('I','4','2','0') ||
-        obj_surf_input->fourcc ==  VA_FOURCC('I','M','C','1') ||
-        obj_surf_input->fourcc ==  VA_FOURCC('I','M','C','3') ||
-        obj_surf_input->fourcc ==  VA_FOURCC('R','G','B','A')){
+     if(obj_surf_input->fourcc ==  VA_FOURCC_YV12 ||
+        obj_surf_input->fourcc ==  VA_FOURCC_I420 ||
+        obj_surf_input->fourcc ==  VA_FOURCC_IMC1 ||
+        obj_surf_input->fourcc ==  VA_FOURCC_IMC3 ||
+        obj_surf_input->fourcc ==  VA_FOURCC_RGBA){
 
          proc_ctx->format_convert_flags |= PRE_FORMAT_CONVERT;
 
-      } else if(obj_surf_input->fourcc ==  VA_FOURCC('A','Y','U','V') ||
-                obj_surf_input->fourcc ==  VA_FOURCC('Y','U','Y','2') ||
-                obj_surf_input->fourcc ==  VA_FOURCC('N','V','1','2')){
+      } else if(obj_surf_input->fourcc ==  VA_FOURCC_AYUV ||
+                obj_surf_input->fourcc ==  VA_FOURCC_YUY2 ||
+                obj_surf_input->fourcc ==  VA_FOURCC_NV12){
                 // nothing to do here
      } else {
            /* not support other format as input */ 
@@ -1030,7 +1175,7 @@ int hsw_veb_pre_format_convert(VADriverContextP ctx,
 
              if (obj_surf_input_vebox) {
                  proc_ctx->surface_input_vebox_object = obj_surf_input_vebox;
-                 i965_check_alloc_surface_bo(ctx, obj_surf_input_vebox, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+                 i965_check_alloc_surface_bo(ctx, obj_surf_input_vebox, 1, VA_FOURCC_NV12, SUBSAMPLE_YUV420);
              }
          }
        
@@ -1038,16 +1183,16 @@ int hsw_veb_pre_format_convert(VADriverContextP ctx,
       }
 
       /* create one temporary NV12 surfaces for conversion*/
-     if(obj_surf_output->fourcc ==  VA_FOURCC('Y','V','1','2') ||
-        obj_surf_output->fourcc ==  VA_FOURCC('I','4','2','0') ||
-        obj_surf_output->fourcc ==  VA_FOURCC('I','M','C','1') ||
-        obj_surf_output->fourcc ==  VA_FOURCC('I','M','C','3') ||
-        obj_surf_output->fourcc ==  VA_FOURCC('R','G','B','A')) {
+     if(obj_surf_output->fourcc ==  VA_FOURCC_YV12 ||
+        obj_surf_output->fourcc ==  VA_FOURCC_I420 ||
+        obj_surf_output->fourcc ==  VA_FOURCC_IMC1 ||
+        obj_surf_output->fourcc ==  VA_FOURCC_IMC3 ||
+        obj_surf_output->fourcc ==  VA_FOURCC_RGBA) {
 
         proc_ctx->format_convert_flags |= POST_FORMAT_CONVERT;
-    } else if(obj_surf_output->fourcc ==  VA_FOURCC('A','Y','U','V') ||
-              obj_surf_output->fourcc ==  VA_FOURCC('Y','U','Y','2') ||
-              obj_surf_output->fourcc ==  VA_FOURCC('N','V','1','2')){
+    } else if(obj_surf_output->fourcc ==  VA_FOURCC_AYUV ||
+              obj_surf_output->fourcc ==  VA_FOURCC_YUY2 ||
+              obj_surf_output->fourcc ==  VA_FOURCC_NV12){
               /* Nothing to do here */
      } else {
            /* not support other format as input */ 
@@ -1069,7 +1214,7 @@ int hsw_veb_pre_format_convert(VADriverContextP ctx,
 
              if (obj_surf_output_vebox) {
                  proc_ctx->surface_output_vebox_object = obj_surf_output_vebox;
-                 i965_check_alloc_surface_bo(ctx, obj_surf_output_vebox, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+                 i965_check_alloc_surface_bo(ctx, obj_surf_output_vebox, 1, VA_FOURCC_NV12, SUBSAMPLE_YUV420);
              }
        }
      }   
@@ -1088,7 +1233,7 @@ int hsw_veb_pre_format_convert(VADriverContextP ctx,
 
              if (obj_surf_output_vebox) {
                  proc_ctx->surface_output_scaled_object = obj_surf_output_vebox;
-                 i965_check_alloc_surface_bo(ctx, obj_surf_output_vebox, 1, VA_FOURCC('N','V','1','2'), SUBSAMPLE_YUV420);
+                 i965_check_alloc_surface_bo(ctx, obj_surf_output_vebox, 1, VA_FOURCC_NV12, SUBSAMPLE_YUV420);
              }
        }
      } 
@@ -1118,7 +1263,7 @@ int hsw_veb_post_format_convert(VADriverContextP ctx,
 
     } else if(proc_ctx->format_convert_flags & POST_SCALING_CONVERT) {
        /* scaling, convert and copy NV12 to YV12/IMC3/IMC2/RGBA output*/
-        assert(obj_surface->fourcc == VA_FOURCC('N','V','1','2'));
+        assert(obj_surface->fourcc == VA_FOURCC_NV12);
      
         /* first step :surface scaling */
         vpp_surface_scaling(ctx,proc_ctx->surface_output_scaled_object, obj_surface);
@@ -1126,13 +1271,13 @@ int hsw_veb_post_format_convert(VADriverContextP ctx,
         /* second step: color format convert and copy to output */
         obj_surface = proc_ctx->surface_output_object;
 
-        if(obj_surface->fourcc ==  VA_FOURCC('N','V','1','2') ||
-           obj_surface->fourcc ==  VA_FOURCC('Y','V','1','2') ||
-           obj_surface->fourcc ==  VA_FOURCC('I','4','2','0') ||
-           obj_surface->fourcc ==  VA_FOURCC('Y','U','Y','2') ||
-           obj_surface->fourcc ==  VA_FOURCC('I','M','C','1') ||
-           obj_surface->fourcc ==  VA_FOURCC('I','M','C','3') ||
-           obj_surface->fourcc ==  VA_FOURCC('R','G','B','A')) {
+        if(obj_surface->fourcc ==  VA_FOURCC_NV12 ||
+           obj_surface->fourcc ==  VA_FOURCC_YV12 ||
+           obj_surface->fourcc ==  VA_FOURCC_I420 ||
+           obj_surface->fourcc ==  VA_FOURCC_YUY2 ||
+           obj_surface->fourcc ==  VA_FOURCC_IMC1 ||
+           obj_surface->fourcc ==  VA_FOURCC_IMC3 ||
+           obj_surface->fourcc ==  VA_FOURCC_RGBA) {
            vpp_surface_convert(ctx, proc_ctx->surface_output_object, proc_ctx->surface_output_scaled_object);
        }else {
            assert(0); 
@@ -1172,6 +1317,9 @@ VAStatus gen75_vebox_process_picture(VADriverContextP ctx,
              proc_ctx->filters_mask |= VPP_IECP_PRO_AMP;
              proc_ctx->filter_iecp_amp = filter;
              proc_ctx->filter_iecp_amp_num_elements = obj_buf->num_elements;
+         } else if (filter->type == VAProcFilterSkinToneEnhancement) {
+             proc_ctx->filters_mask |= VPP_IECP_STD_STE;
+             proc_ctx->filter_iecp_std = filter;
          }
     }
 
@@ -1295,5 +1443,217 @@ struct intel_vebox_context * gen75_vebox_context_init(VADriverContextP ctx)
     proc_context->format_convert_flags  = 0;
 
     return proc_context;
+}
+
+void bdw_veb_state_command(VADriverContextP ctx, struct intel_vebox_context *proc_ctx)
+{
+    struct intel_batchbuffer *batch = proc_ctx->batch;
+    unsigned int is_dn_enabled   = (proc_ctx->filters_mask & 0x01)? 1: 0;
+    unsigned int is_di_enabled   = (proc_ctx->filters_mask & 0x02)? 1: 0;
+    unsigned int is_iecp_enabled = (proc_ctx->filters_mask & 0xff00)?1:0;
+    unsigned int is_first_frame  = !!((proc_ctx->frame_order == -1) &&
+                                      (is_di_enabled ||
+                                       is_dn_enabled));
+    unsigned int di_output_frames_flag = 2; /* Output Current Frame Only */
+
+    if(proc_ctx->fourcc_input != proc_ctx->fourcc_output ||
+       (is_dn_enabled == 0 && is_di_enabled == 0)){
+       is_iecp_enabled = 1;
+    }
+
+    if (is_di_enabled) {
+        VAProcFilterParameterBufferDeinterlacing *di_param =
+            (VAProcFilterParameterBufferDeinterlacing *)proc_ctx->filter_di;
+
+        assert(di_param);
+        
+        if (di_param->algorithm == VAProcDeinterlacingBob)
+            is_first_frame = 1;
+
+        if ((di_param->algorithm == VAProcDeinterlacingMotionAdaptive ||
+            di_param->algorithm == VAProcDeinterlacingMotionCompensated) &&
+            proc_ctx->frame_order != -1)
+            di_output_frames_flag = 0; /* Output both Current Frame and Previous Frame */
+    }
+
+    BEGIN_VEB_BATCH(batch, 0xc);
+    OUT_VEB_BATCH(batch, VEB_STATE | (0xc - 2));
+    OUT_VEB_BATCH(batch,
+                  0 << 25 |       // state surface control bits
+                  0 << 23 |       // reserved.
+                  0 << 22 |       // gamut expansion position
+                  0 << 15 |       // reserved.
+                  0 << 14 |       // single slice vebox enable
+                  0 << 13 |       // hot pixel filter enable
+                  0 << 12 |       // alpha plane enable
+                  0 << 11 |       // vignette enable
+                  0 << 10 |       // demosaic enable
+                  di_output_frames_flag << 8  |       // DI output frame
+                  1 << 7  |       // 444->422 downsample method
+                  1 << 6  |       // 422->420 downsample method
+                  is_first_frame  << 5  |   // DN/DI first frame
+                  is_di_enabled   << 4  |             // DI enable
+                  is_dn_enabled   << 3  |             // DN enable
+                  is_iecp_enabled << 2  |             // global IECP enabled
+                  0 << 1  |       // ColorGamutCompressionEnable
+                  0 ) ;           // ColorGamutExpansionEnable.
+
+    OUT_RELOC(batch,
+              proc_ctx->dndi_state_table.bo,
+              I915_GEM_DOMAIN_INSTRUCTION, 0, 0);
+
+    OUT_VEB_BATCH(batch, 0);
+
+    OUT_RELOC(batch,
+              proc_ctx->iecp_state_table.bo,
+              I915_GEM_DOMAIN_INSTRUCTION, 0, 0);
+
+    OUT_VEB_BATCH(batch, 0);
+
+    OUT_RELOC(batch,
+              proc_ctx->gamut_state_table.bo,
+              I915_GEM_DOMAIN_INSTRUCTION, 0, 0);
+
+    OUT_VEB_BATCH(batch, 0);
+
+    OUT_RELOC(batch,
+              proc_ctx->vertex_state_table.bo,
+              I915_GEM_DOMAIN_INSTRUCTION, 0, 0);
+
+    OUT_VEB_BATCH(batch, 0);
+
+    OUT_VEB_BATCH(batch, 0);/*caputre pipe state pointer*/
+    OUT_VEB_BATCH(batch, 0);
+
+    ADVANCE_VEB_BATCH(batch);
+}
+
+void bdw_veb_dndi_iecp_command(VADriverContextP ctx, struct intel_vebox_context *proc_ctx)
+{
+    struct intel_batchbuffer *batch = proc_ctx->batch;
+    unsigned char frame_ctrl_bits = 0;
+    unsigned int startingX = 0;
+    unsigned int endingX = (proc_ctx->width_input + 63 ) / 64 * 64;
+
+    BEGIN_VEB_BATCH(batch, 0x14);
+    OUT_VEB_BATCH(batch, VEB_DNDI_IECP_STATE | (0x14 - 2));//DWord 0
+    OUT_VEB_BATCH(batch,
+                  startingX << 16 |
+                  endingX -1);//DWord 1
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_IN_CURRENT].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, 0, frame_ctrl_bits);//DWord 2
+    OUT_VEB_BATCH(batch,0);//DWord 3
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_IN_PREVIOUS].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, 0, frame_ctrl_bits);//DWord 4
+    OUT_VEB_BATCH(batch,0);//DWord 5
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_IN_STMM].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, 0, frame_ctrl_bits);//DWord 6
+    OUT_VEB_BATCH(batch,0);//DWord 7
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_OUT_STMM].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, frame_ctrl_bits);//DWord 8
+    OUT_VEB_BATCH(batch,0);//DWord 9
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_OUT_CURRENT_DN].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, frame_ctrl_bits);//DWord 10
+    OUT_VEB_BATCH(batch,0);//DWord 11
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_OUT_CURRENT].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, frame_ctrl_bits);//DWord 12
+    OUT_VEB_BATCH(batch,0);//DWord 13
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_OUT_PREVIOUS].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, frame_ctrl_bits);//DWord 14
+    OUT_VEB_BATCH(batch,0);//DWord 15
+
+    OUT_RELOC(batch,
+              proc_ctx->frame_store[FRAME_OUT_STATISTIC].obj_surface->bo,
+              I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, frame_ctrl_bits);//DWord 16
+    OUT_VEB_BATCH(batch,0);//DWord 17
+
+    OUT_VEB_BATCH(batch,0);//DWord 18
+    OUT_VEB_BATCH(batch,0);//DWord 19
+
+    ADVANCE_VEB_BATCH(batch);
+}
+
+VAStatus gen8_vebox_process_picture(VADriverContextP ctx,
+                         struct intel_vebox_context *proc_ctx)
+{
+    struct i965_driver_data *i965 = i965_driver_data(ctx);
+ 
+    VAProcPipelineParameterBuffer *pipe = proc_ctx->pipeline_param;
+    VAProcFilterParameterBuffer* filter = NULL;
+    struct object_buffer *obj_buf = NULL;
+    unsigned int i;
+
+    for (i = 0; i < pipe->num_filters; i ++) {
+         obj_buf = BUFFER(pipe->filters[i]);
+         
+         assert(obj_buf && obj_buf->buffer_store);
+
+         if (!obj_buf || !obj_buf->buffer_store)
+             goto error;
+
+         filter = (VAProcFilterParameterBuffer*)obj_buf-> buffer_store->buffer;
+            
+         if (filter->type == VAProcFilterNoiseReduction) {
+             proc_ctx->filters_mask |= VPP_DNDI_DN;
+             proc_ctx->filter_dn = filter;
+         } else if (filter->type == VAProcFilterDeinterlacing) {
+             proc_ctx->filters_mask |= VPP_DNDI_DI;
+             proc_ctx->filter_di = filter;
+         } else if (filter->type == VAProcFilterColorBalance) {
+             proc_ctx->filters_mask |= VPP_IECP_PRO_AMP;
+             proc_ctx->filter_iecp_amp = filter;
+             proc_ctx->filter_iecp_amp_num_elements = obj_buf->num_elements;
+         } else if (filter->type == VAProcFilterSkinToneEnhancement) {
+             proc_ctx->filters_mask |= VPP_IECP_STD_STE;
+             proc_ctx->filter_iecp_std = filter;
+         }
+    }
+
+    hsw_veb_pre_format_convert(ctx, proc_ctx);
+    hsw_veb_surface_reference(ctx, proc_ctx);
+
+    if (proc_ctx->frame_order == -1) {
+        hsw_veb_resource_prepare(ctx, proc_ctx);
+    }
+
+    if (proc_ctx->format_convert_flags & POST_COPY_CONVERT) {
+        assert(proc_ctx->frame_order == 1);
+        /* directly copy the saved frame in the second call */
+    } else {
+        intel_batchbuffer_start_atomic_veb(proc_ctx->batch, 0x1000);
+        intel_batchbuffer_emit_mi_flush(proc_ctx->batch);
+        hsw_veb_surface_state(ctx, proc_ctx, INPUT_SURFACE); 
+        hsw_veb_surface_state(ctx, proc_ctx, OUTPUT_SURFACE); 
+        hsw_veb_state_table_setup(ctx, proc_ctx);
+
+        bdw_veb_state_command(ctx, proc_ctx);		
+        bdw_veb_dndi_iecp_command(ctx, proc_ctx);
+        intel_batchbuffer_end_atomic(proc_ctx->batch);
+        intel_batchbuffer_flush(proc_ctx->batch);
+    }
+
+    hsw_veb_post_format_convert(ctx, proc_ctx);
+    // hsw_veb_surface_unreference(ctx, proc_ctx);
+
+    proc_ctx->frame_order = (proc_ctx->frame_order + 1) % 2;
+     
+    return VA_STATUS_SUCCESS;
+
+error:
+    return VA_STATUS_ERROR_INVALID_PARAMETER;
 }
 

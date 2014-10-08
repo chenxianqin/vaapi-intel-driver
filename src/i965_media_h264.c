@@ -11,6 +11,7 @@
 #include "i965_drv_video.h"
 #include "i965_media.h"
 #include "i965_media_h264.h"
+#include "i965_decoder_utils.h"
 
 enum {
     INTRA_16X16 = 0,
@@ -349,7 +350,7 @@ i965_media_h264_surfaces_setup(VADriverContextP ctx,
     struct object_surface *obj_surface;
     VAPictureParameterBufferH264 *pic_param;
     VAPictureH264 *va_pic;
-    int i, j, w, h;
+    int i, w, h;
     int field_picture;
 
     assert(media_context->private_context);
@@ -381,24 +382,15 @@ i965_media_h264_surfaces_setup(VADriverContextP ctx,
 
     /* Reference Pictures */
     for (i = 0; i < ARRAY_ELEMS(i965_h264_context->fsid_list); i++) {
-        if (i965_h264_context->fsid_list[i].surface_id != VA_INVALID_ID &&
-            i965_h264_context->fsid_list[i].obj_surface != NULL) {
-            int found = 0;
-            for (j = 0; j < ARRAY_ELEMS(pic_param->ReferenceFrames); j++) {
-                va_pic = &pic_param->ReferenceFrames[j];
-                
-                if (va_pic->flags & VA_PICTURE_H264_INVALID)
-                    continue;
+        struct object_surface * const obj_surface =
+            i965_h264_context->fsid_list[i].obj_surface;
 
-                if (va_pic->picture_id == i965_h264_context->fsid_list[i].surface_id) {
-                    found = 1;
-                    break;
-                }
-            }
+        if (obj_surface) {
+            const VAPictureH264 * const va_pic = avc_find_picture(
+                obj_surface->base.id, pic_param->ReferenceFrames,
+                ARRAY_ELEMS(pic_param->ReferenceFrames));
 
-            assert(found == 1);
-
-            obj_surface = i965_h264_context->fsid_list[i].obj_surface;
+            assert(va_pic != NULL);
             w = obj_surface->width;
             h = obj_surface->height;
             field_picture = !!(va_pic->flags & (VA_PICTURE_H264_TOP_FIELD | VA_PICTURE_H264_BOTTOM_FIELD));
@@ -919,7 +911,7 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
                                     sizeof(h264_avc_kernels_gen5[0])));
     assert(NUM_AVC_MC_INTERFACES == (sizeof(avc_mc_kernel_offset_gen5) /
                                      sizeof(avc_mc_kernel_offset_gen5[0])));
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         memcpy(i965_h264_context->avc_kernels, h264_avc_kernels_gen5, sizeof(i965_h264_context->avc_kernels));
         avc_mc_kernel_offset = avc_mc_kernel_offset_gen5;
         intra_kernel_header = &intra_kernel_header_gen5;
@@ -953,7 +945,7 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
     media_context->free_private_context = i965_media_h264_free_private_context;
 
     /* URB */
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         media_context->urb.num_vfe_entries = 63;
     } else {
         media_context->urb.num_vfe_entries = 23;
@@ -968,7 +960,7 @@ i965_media_h264_dec_context_init(VADriverContextP ctx, struct i965_media_context
     media_context->urb.cs_start = media_context->urb.vfe_start + 
         media_context->urb.num_vfe_entries * media_context->urb.size_vfe_entry;
     assert(media_context->urb.cs_start + 
-           media_context->urb.num_cs_entries * media_context->urb.size_cs_entry <= URB_SIZE((&i965->intel)));
+           media_context->urb.num_cs_entries * media_context->urb.size_cs_entry <= i965->intel.device_info->urb_size);
 
     /* hook functions */
     media_context->media_states_setup = i965_media_h264_states_setup;

@@ -4,6 +4,7 @@ INTEL_PP_G7B = \
 	nv12_dn_nv12.g7b	\
 	pa_to_pl2.g7b		\
 	pa_to_pl3.g7b		\
+	pa_to_pa.g7b		\
 	pl2_to_pa.g7b		\
 	pl2_to_pl2.g7b		\
 	pl2_to_pl3.g7b		\
@@ -81,16 +82,18 @@ all-local: $(TARGETS)
 
 SUFFIXES = .g7b .g7s .asm
 
+if HAVE_GEN4ASM
 $(INTEL_PP_GEN7_ASM): $(INTEL_PP_ASM) $(INTEL_PP_G4A)
 .asm.g7s:
 	$(AM_V_GEN)cpp $< > _pp0.$@;		\
 	../../gpp.py _pp0.$@ $@;	\
 	rm _pp0.$@
 .g7s.g7b:
-	$(AM_V_GEN)intel-gen4asm -a -o $@ -g 7 $<
+	$(AM_V_GEN)$(GEN4ASM) -a -o $@ -g 7 $<
 
 .g7s.g75b:
-	$(AM_V_GEN)intel-gen4asm -a -o $@ -g 7.5 $<
+	$(AM_V_GEN)$(GEN4ASM) -a -o $@ -g 7.5 $<
+endif
 
 CLEANFILES = $(INTEL_PP_GEN7_ASM)
 

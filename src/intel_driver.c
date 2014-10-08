@@ -34,6 +34,7 @@
 #include "intel_batchbuffer.h"
 #include "intel_memman.h"
 #include "intel_driver.h"
+uint32_t g_intel_debug_option_flags = 0;
 
 static Bool
 intel_driver_get_param(struct intel_driver_data *intel, int param, int *value)
@@ -67,12 +68,22 @@ static void intel_driver_get_revid(struct intel_driver_data *intel, int *value)
 	return;
 }
 
+extern const struct intel_device_info *i965_get_device_info(int devid);
+
 bool 
 intel_driver_init(VADriverContextP ctx)
 {
     struct intel_driver_data *intel = intel_driver_data(ctx);
     struct drm_state * const drm_state = (struct drm_state *)ctx->drm_state;
-    int has_exec2, has_bsd, has_blt;
+    int has_exec2 = 0, has_bsd = 0, has_blt = 0, has_vebox = 0;
+    char *env_str = NULL;
+
+    g_intel_debug_option_flags = 0;
+    if ((env_str = getenv("VA_INTEL_DEBUG")))
+        g_intel_debug_option_flags = atoi(env_str);
+
+    if (g_intel_debug_option_flags)
+        fprintf(stderr, "g_intel_debug_option_flags:%x\n", g_intel_debug_option_flags);
 
     assert(drm_state);
     assert(VA_CHECK_DRM_AUTH_TYPE(ctx, VA_DRM_AUTH_DRI1) ||
@@ -91,12 +102,19 @@ intel_driver_init(VADriverContextP ctx)
     pthread_mutex_init(&intel->ctxmutex, NULL);
 
     intel_driver_get_param(intel, I915_PARAM_CHIPSET_ID, &intel->device_id);
+    intel->device_info = i965_get_device_info(intel->device_id);
+
+    if (!intel->device_info)
+        return false;
+
     if (intel_driver_get_param(intel, I915_PARAM_HAS_EXECBUF2, &has_exec2))
         intel->has_exec2 = has_exec2;
     if (intel_driver_get_param(intel, I915_PARAM_HAS_BSD, &has_bsd))
         intel->has_bsd = has_bsd;
     if (intel_driver_get_param(intel, I915_PARAM_HAS_BLT, &has_blt))
         intel->has_blt = has_blt;
+    if (intel_driver_get_param(intel, I915_PARAM_HAS_VEBOX, &has_vebox))
+        intel->has_vebox = !!has_vebox;
    
     intel_driver_get_revid(intel, &intel->revision);
     intel_memman_init(intel);

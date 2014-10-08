@@ -1,6 +1,6 @@
 # intel-driver package version number
 m4_define([intel_driver_major_version], [1])
-m4_define([intel_driver_minor_version], [2])
+m4_define([intel_driver_minor_version], [4])
 m4_define([intel_driver_micro_version], [1])
 m4_define([intel_driver_pre_version],   [1])
 m4_define([intel_driver_version],
@@ -10,8 +10,8 @@ m4_append([intel_driver_version], intel_driver_pre_version, [.pre])
 ])
 
 # libva minimum version requirement
-m4_define([va_api_version], [0.34])
-m4_define([libva_package_version], [1.2.0])
+m4_define([va_api_version], [0.36])
+m4_define([libva_package_version], [1.4.0])
 
 # libdrm minimum version requirement
 m4_define([libdrm_version], [2.4.45])
@@ -76,9 +76,14 @@ PKG_CHECK_MODULES([DRM], [libdrm >= $LIBDRM_VERSION])
 AC_SUBST(LIBDRM_VERSION)
 
 dnl Check for gen4asm
-PKG_CHECK_MODULES(GEN4ASM, [intel-gen4asm >= 1.3], [gen4asm=yes], [gen4asm=no])
+PKG_CHECK_MODULES(GEN4ASM, [intel-gen4asm >= 1.5], [gen4asm=yes], [gen4asm=no])
 AM_CONDITIONAL(HAVE_GEN4ASM, test x$gen4asm = xyes)
 AC_PATH_PROG([GEN4ASM], [intel-gen4asm])
+
+dnl Check for git
+AC_ARG_VAR([GIT], [Path to git program, if any])
+AC_PATH_PROG([GIT], [git])
+AM_CONDITIONAL([HAVE_GIT], [test -n "$GIT"])
 
 dnl Check for VA-API
 PKG_CHECK_MODULES(LIBVA_DEPS,     [libva >= va_api_version])
@@ -178,6 +183,8 @@ AC_OUTPUT([
     src/shaders/post_processing/Makefile
     src/shaders/post_processing/gen5_6/Makefile
     src/shaders/post_processing/gen7/Makefile
+    src/shaders/post_processing/gen75/Makefile
+    src/shaders/post_processing/gen8/Makefile
     src/shaders/render/Makefile
     src/shaders/utils/Makefile
     src/shaders/vme/Makefile

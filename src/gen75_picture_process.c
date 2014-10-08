@@ -38,12 +38,6 @@
 #include "i965_post_processing.h"
 #include "gen75_picture_process.h"
 
-extern void
-i965_proc_picture(VADriverContextP ctx, 
-                  VAProfile profile, 
-                  union codec_state *codec_state,
-                  struct hw_context *hw_context);
-
 extern struct hw_context *
 i965_proc_context_init(VADriverContextP ctx,
                        struct object_config *obj_config);
@@ -63,8 +57,8 @@ gen75_vpp_fmt_cvt(VADriverContextP ctx,
          proc_ctx->vpp_fmt_cvt_ctx = i965_proc_context_init(ctx, NULL);
     }
 
-    i965_proc_picture(ctx, profile, codec_state, 
-                      proc_ctx->vpp_fmt_cvt_ctx);
+    va_status = i965_proc_picture(ctx, profile, codec_state,
+                                  proc_ctx->vpp_fmt_cvt_ctx);
 
     return va_status;
 }
@@ -75,6 +69,7 @@ gen75_vpp_vebox(VADriverContextP ctx,
 {
      VAStatus va_status = VA_STATUS_SUCCESS;
      VAProcPipelineParameterBuffer* pipeline_param = proc_ctx->pipeline_param; 
+     struct i965_driver_data *i965 = i965_driver_data(ctx); 
  
      /* vpp features based on VEBox fixed function */
      if(proc_ctx->vpp_vebox_ctx == NULL) {
@@ -85,7 +80,10 @@ gen75_vpp_vebox(VADriverContextP ctx,
      proc_ctx->vpp_vebox_ctx->surface_input_object = proc_ctx->surface_pipeline_input_object;
      proc_ctx->vpp_vebox_ctx->surface_output_object  = proc_ctx->surface_render_output_object;
 
-     va_status = gen75_vebox_process_picture(ctx, proc_ctx->vpp_vebox_ctx);
+     if (IS_HASWELL(i965->intel.device_info))
+         va_status = gen75_vebox_process_picture(ctx, proc_ctx->vpp_vebox_ctx);
+     else if (IS_GEN8(i965->intel.device_info))
+         va_status = gen8_vebox_process_picture(ctx, proc_ctx->vpp_vebox_ctx);
  
      return va_status;
 } 
@@ -97,14 +95,14 @@ gen75_vpp_gpe(VADriverContextP ctx,
      VAStatus va_status = VA_STATUS_SUCCESS;
 
      if(proc_ctx->vpp_gpe_ctx == NULL){
-         proc_ctx->vpp_gpe_ctx = gen75_gpe_context_init(ctx);
+         proc_ctx->vpp_gpe_ctx = vpp_gpe_context_init(ctx);
      }
    
      proc_ctx->vpp_gpe_ctx->pipeline_param = proc_ctx->pipeline_param;
      proc_ctx->vpp_gpe_ctx->surface_pipeline_input_object = proc_ctx->surface_pipeline_input_object;
      proc_ctx->vpp_gpe_ctx->surface_output_object = proc_ctx->surface_render_output_object;
 
-     va_status = gen75_gpe_process_picture(ctx, proc_ctx->vpp_gpe_ctx);
+     va_status = vpp_gpe_process_picture(ctx, proc_ctx->vpp_gpe_ctx);
  
      return va_status;     
 }
@@ -123,29 +121,43 @@ gen75_proc_picture(VADriverContextP ctx,
              (VAProcPipelineParameterBuffer *)proc_st->pipeline_param->buffer;
     struct object_surface *obj_dst_surf = NULL;
     struct object_surface *obj_src_surf = NULL;
+    VAStatus status;
+
     proc_ctx->pipeline_param = pipeline_param;
-    assert(proc_st->current_render_target != VA_INVALID_SURFACE);
 
     if (proc_st->current_render_target == VA_INVALID_SURFACE ||
-        pipeline_param->surface == VA_INVALID_SURFACE)
+        pipeline_param->surface == VA_INVALID_SURFACE) {
+        status = VA_STATUS_ERROR_INVALID_SURFACE;
         goto error;
+    }
 
     obj_dst_surf = SURFACE(proc_st->current_render_target);
 
-    if (!obj_dst_surf)
+    if (!obj_dst_surf) {
+        status = VA_STATUS_ERROR_INVALID_SURFACE;
         goto error;
+    }
 
     obj_src_surf = SURFACE(proc_ctx->pipeline_param->surface);
 
-    if (!obj_src_surf)
+    if (!obj_src_surf) {
+        status = VA_STATUS_ERROR_INVALID_SURFACE;
         goto error;
+    }
 
-    if (pipeline_param->num_filters && !pipeline_param->filters)
+    if (!obj_src_surf->bo) {
+        status = VA_STATUS_ERROR_INVALID_VALUE; /* The input surface is created without valid content */
         goto error;
+    }
+
+    if (pipeline_param->num_filters && !pipeline_param->filters) {
+        status = VA_STATUS_ERROR_INVALID_PARAMETER;
+        goto error;
+    }
 
     if (!obj_dst_surf->bo) {
         unsigned int is_tiled = 0;
-        unsigned int fourcc = VA_FOURCC('N','V','1','2');
+        unsigned int fourcc = VA_FOURCC_NV12;
         int sampling = SUBSAMPLE_YUV420;
         i965_check_alloc_surface_bo(ctx, obj_dst_surf, is_tiled, fourcc, sampling);
     }  
@@ -166,23 +178,25 @@ gen75_proc_picture(VADriverContextP ctx,
        
        if (!obj_buf ||
            !obj_buf->buffer_store ||
-           !obj_buf->buffer_store->buffer)
+           !obj_buf->buffer_store->buffer) {
+           status = VA_STATUS_ERROR_INVALID_FILTER_CHAIN;
            goto error;
+       }
 
        VAProcFilterParameterBuffer* filter =
            (VAProcFilterParameterBuffer*)obj_buf-> buffer_store->buffer;
 
-       if (filter->type == VAProcFilterNoiseReduction   ||
-           filter->type == VAProcFilterDeinterlacing    ||
+       if (filter->type == VAProcFilterNoiseReduction         ||
+           filter->type == VAProcFilterDeinterlacing          ||
+           filter->type == VAProcFilterSkinToneEnhancement    ||
            filter->type == VAProcFilterColorBalance){
            gen75_vpp_vebox(ctx, proc_ctx);
        }else if(filter->type == VAProcFilterSharpening){
-           assert(obj_src_surf->fourcc == VA_FOURCC('N','V','1','2') && 
-                  obj_dst_surf->fourcc == VA_FOURCC('N','V','1','2'));
-
-           if (obj_src_surf->fourcc != VA_FOURCC('N', 'V', '1', '2') ||
-               obj_dst_surf->fourcc != VA_FOURCC('N', 'V', '1', '2'))
+           if (obj_src_surf->fourcc != VA_FOURCC_NV12 ||
+               obj_dst_surf->fourcc != VA_FOURCC_NV12) {
+               status = VA_STATUS_ERROR_UNIMPLEMENTED;
                goto error;
+           }
 
            gen75_vpp_gpe(ctx, proc_ctx);
        } 
@@ -191,18 +205,19 @@ gen75_proc_picture(VADriverContextP ctx,
          for (i = 0; i < pipeline_param->num_filters; i++){
              struct object_buffer * obj_buf = BUFFER(pipeline_param->filters[i]);
 
-             assert(obj_buf && obj_buf->buffer_store && obj_buf->buffer_store->buffer);
-       
              if (!obj_buf ||
                  !obj_buf->buffer_store ||
-                 !obj_buf->buffer_store->buffer)
+                 !obj_buf->buffer_store->buffer) {
+                 status = VA_STATUS_ERROR_INVALID_FILTER_CHAIN;
                  goto error;
+             }
 
              VAProcFilterParameterBuffer* filter =
                  (VAProcFilterParameterBuffer*)obj_buf-> buffer_store->buffer;
 
-             if (filter->type != VAProcFilterNoiseReduction &&
-                 filter->type != VAProcFilterDeinterlacing  &&
+             if (filter->type != VAProcFilterNoiseReduction       &&
+                 filter->type != VAProcFilterDeinterlacing        &&
+                 filter->type != VAProcFilterSkinToneEnhancement  &&
                  filter->type != VAProcFilterColorBalance) {
                  printf("Do not support multiply filters outside vebox pipeline \n");
                  assert(0);
@@ -214,7 +229,7 @@ gen75_proc_picture(VADriverContextP ctx,
     return VA_STATUS_SUCCESS;
 
 error:
-    return VA_STATUS_ERROR_INVALID_PARAMETER;
+    return status;
 }
 
 static void 
@@ -235,7 +250,7 @@ gen75_proc_context_destroy(void *hw_context)
     }
 
     if(proc_ctx->vpp_gpe_ctx){
-       gen75_gpe_context_destroy(ctx,proc_ctx->vpp_gpe_ctx);
+       vpp_gpe_context_destroy(ctx,proc_ctx->vpp_gpe_ctx);
        proc_ctx->vpp_gpe_ctx = NULL;
     }
 

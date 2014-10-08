@@ -42,19 +42,14 @@ struct encode_state;
 
 #define INTRA_MB_FLAG_MASK              0x00002000
 
+/* The space required for slice header SLICE_STATE + header.
+ * Is it enough? */
+#define SLICE_HEADER			80
+
+/* the space required for slice tail. */
+#define SLICE_TAIL			16
+
 #define __SOFTWARE__    0
-
-#define SURFACE_STATE_PADDED_SIZE_0_GEN7        ALIGN(sizeof(struct gen7_surface_state), 32)
-#define SURFACE_STATE_PADDED_SIZE_1_GEN7        ALIGN(sizeof(struct gen7_surface_state2), 32)
-#define SURFACE_STATE_PADDED_SIZE_GEN7          MAX(SURFACE_STATE_PADDED_SIZE_0_GEN7, SURFACE_STATE_PADDED_SIZE_1_GEN7)
-
-#define SURFACE_STATE_PADDED_SIZE_0_GEN6        ALIGN(sizeof(struct i965_surface_state), 32)
-#define SURFACE_STATE_PADDED_SIZE_1_GEN6        ALIGN(sizeof(struct i965_surface_state2), 32)
-#define SURFACE_STATE_PADDED_SIZE_GEN6          MAX(SURFACE_STATE_PADDED_SIZE_0_GEN6, SURFACE_STATE_PADDED_SIZE_1_GEN6)
-
-#define SURFACE_STATE_PADDED_SIZE               MAX(SURFACE_STATE_PADDED_SIZE_GEN6, SURFACE_STATE_PADDED_SIZE_GEN7)
-#define SURFACE_STATE_OFFSET(index)             (SURFACE_STATE_PADDED_SIZE * index)
-#define BINDING_TABLE_OFFSET(index)             (SURFACE_STATE_OFFSET(MAX_MEDIA_SURFACES_GEN6) + sizeof(unsigned int) * index)
 
 #define MFC_BATCHBUFFER_AVC_INTRA       0
 #define MFC_BATCHBUFFER_AVC_INTER       1
@@ -164,6 +159,12 @@ struct gen6_mfc_context
         int target_frame_size[3]; // I,P,B
         double bits_per_frame;
         double qpf_rounding_accumulator;
+
+        double saved_bps;
+        double saved_fps;
+        int saved_intra_period;
+        int saved_ip_period;
+        int saved_idr_period;
     } brc;
 
     struct {
@@ -200,10 +201,10 @@ struct gen6_mfc_context
     void (*set_surface_state)(VADriverContextP ctx,
                               struct intel_encoder_context *encoder_context);
     void (*ind_obj_base_addr_state)(VADriverContextP ctx,
-                                      struct intel_encoder_context *encoder_context);
+                                    struct intel_encoder_context *encoder_context);
     void (*avc_img_state)(VADriverContextP ctx,
-                                struct encode_state *encode_state,  
-                                struct intel_encoder_context *encoder_context);
+                          struct encode_state *encode_state,
+                          struct intel_encoder_context *encoder_context);
     void (*avc_qm_state)(VADriverContextP ctx,
                          struct intel_encoder_context *encoder_context);
     void (*avc_fqm_state)(VADriverContextP ctx,
@@ -234,38 +235,47 @@ Bool gen75_mfc_context_init(VADriverContextP ctx, struct intel_encoder_context *
 
 
 extern int intel_mfc_update_hrd(struct encode_state *encode_state,
-                               struct gen6_mfc_context *mfc_context,
-                               int frame_bits);
+                                struct gen6_mfc_context *mfc_context,
+                                int frame_bits);
 
 extern int intel_mfc_brc_postpack(struct encode_state *encode_state,
-                                 struct gen6_mfc_context *mfc_context,
-                                 int frame_bits);
+                                  struct gen6_mfc_context *mfc_context,
+                                  int frame_bits);
 
 extern void intel_mfc_hrd_context_update(struct encode_state *encode_state,
-				struct gen6_mfc_context *mfc_context);
+                                         struct gen6_mfc_context *mfc_context);
 
 extern int intel_mfc_interlace_check(VADriverContextP ctx,
-                   struct encode_state *encode_state,
-                   struct intel_encoder_context *encoder_context);
-
-extern void intel_mfc_brc_prepare(struct encode_state *encode_state,
-                          struct intel_encoder_context *encoder_context);
-
-extern void intel_mfc_avc_pipeline_header_programing(VADriverContextP ctx,
-                                                    struct encode_state *encode_state,
-                                                    struct intel_encoder_context *encoder_context,
-                                                    struct intel_batchbuffer *slice_batch);
-
-extern VAStatus intel_mfc_avc_prepare(VADriverContextP ctx, 
                                      struct encode_state *encode_state,
                                      struct intel_encoder_context *encoder_context);
 
-extern int intel_avc_enc_slice_type_fixup(int type);
+extern void intel_mfc_brc_prepare(struct encode_state *encode_state,
+                                  struct intel_encoder_context *encoder_context);
 
+extern void intel_mfc_avc_pipeline_header_programing(VADriverContextP ctx,
+                                                     struct encode_state *encode_state,
+                                                     struct intel_encoder_context *encoder_context,
+                                                     struct intel_batchbuffer *slice_batch);
+
+extern VAStatus intel_mfc_avc_prepare(VADriverContextP ctx, 
+                                      struct encode_state *encode_state,
+                                      struct intel_encoder_context *encoder_context);
+
+extern int intel_avc_enc_slice_type_fixup(int type);
 
 extern void
 intel_mfc_avc_ref_idx_state(VADriverContextP ctx,
-				struct encode_state *encode_state,
-				struct intel_encoder_context *encoder_context);
+                            struct encode_state *encode_state,
+                            struct intel_encoder_context *encoder_context);
+
+extern
+Bool gen8_mfc_context_init(VADriverContextP ctx, struct intel_encoder_context *encoder_context);
+
+extern void
+intel_avc_slice_insert_packed_data(VADriverContextP ctx,
+                             struct encode_state *encode_state,
+                             struct intel_encoder_context *encoder_context,
+                             int slice_index,
+                             struct intel_batchbuffer *slice_batch);
 
 #endif	/* _GEN6_MFC_BCS_H_ */

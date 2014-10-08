@@ -43,8 +43,22 @@ mpeg2_set_reference_surfaces(
     VAPictureParameterBufferMPEG2 *pic_param
 );
 
+VAStatus
+avc_ensure_surface_bo(
+    VADriverContextP                    ctx,
+    struct decode_state                *decode_state,
+    struct object_surface              *obj_surface,
+    const VAPictureParameterBufferH264 *pic_param
+);
+
 void
 avc_gen_default_iq_matrix(VAIQMatrixBufferH264 *iq_matrix);
+
+int
+avc_get_picture_id(struct object_surface *obj_surface);
+
+VAPictureH264 *
+avc_find_picture(VASurfaceID id, VAPictureH264 *pic_list, int pic_list_count);
 
 unsigned int
 avc_get_first_mb_bit_offset(
@@ -75,20 +89,69 @@ gen6_send_avc_ref_idx_state(
     const GenFrameStore               frame_store[MAX_GEN_REFERENCE_FRAMES]
 );
 
+void
+gen6_mfd_avc_phantom_slice(VADriverContextP ctx,
+                           VAPictureParameterBufferH264 *pic_param,
+                           VASliceParameterBufferH264 *next_slice_param,
+                           struct intel_batchbuffer *batch
+);
+
 VAStatus
 intel_decoder_sanity_check_input(VADriverContextP ctx,
                                  VAProfile profile,
                                  struct decode_state *decode_state);
 
 void
-intel_update_avc_frame_store_index(VADriverContextP ctx,
-                                   struct decode_state *decode_state,
-                                   VAPictureParameterBufferH264 *pic_param,
-                                   GenFrameStore frame_store[MAX_GEN_REFERENCE_FRAMES]);
+intel_update_avc_frame_store_index(
+    VADriverContextP                    ctx,
+    struct decode_state                *decode_state,
+    VAPictureParameterBufferH264       *pic_param,
+    GenFrameStore                       frame_store[MAX_GEN_REFERENCE_FRAMES],
+    GenFrameStoreContext               *fs_ctx
+);
+
+void
+gen75_update_avc_frame_store_index(
+    VADriverContextP                    ctx,
+    struct decode_state                *decode_state,
+    VAPictureParameterBufferH264       *pic_param,
+    GenFrameStore                       frame_store[MAX_GEN_REFERENCE_FRAMES]
+);
+
+bool
+gen75_fill_avc_picid_list(
+    uint16_t                            pic_ids[16],
+    GenFrameStore                       frame_store[MAX_GEN_REFERENCE_FRAMES]
+);
+
+bool
+gen75_send_avc_picid_state(
+    struct intel_batchbuffer           *batch,
+    GenFrameStore                       frame_store[MAX_GEN_REFERENCE_FRAMES]
+);
 
 void
 intel_update_vc1_frame_store_index(VADriverContextP ctx,
                                    struct decode_state *decode_state,
                                    VAPictureParameterBufferVC1 *pic_param,
                                    GenFrameStore frame_store[MAX_GEN_REFERENCE_FRAMES]);
+
+VASliceParameterBufferMPEG2 *
+intel_mpeg2_find_next_slice(struct decode_state *decode_state,
+                            VAPictureParameterBufferMPEG2 *pic_param,
+                            VASliceParameterBufferMPEG2 *slice_param,
+                            int *group_idx,
+                            int *element_idx);
+
+
+void
+intel_update_vp8_frame_store_index(VADriverContextP ctx,
+                                   struct decode_state *decode_state,
+                                   VAPictureParameterBufferVP8 *pic_param,
+                                   GenFrameStore frame_store[MAX_GEN_REFERENCE_FRAMES]);
+
+bool
+intel_ensure_vp8_segmentation_buffer(VADriverContextP ctx, GenBuffer *buf,
+    unsigned int mb_width, unsigned int mb_height);
+
 #endif /* I965_DECODER_UTILS_H */

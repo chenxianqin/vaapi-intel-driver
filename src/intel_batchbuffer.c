@@ -86,6 +86,16 @@ intel_batchbuffer_new(struct intel_driver_data *intel, int flag, int buffer_size
     batch->intel = intel;
     batch->flag = flag;
     batch->run = drm_intel_bo_mrb_exec;
+
+    if (IS_GEN6(intel->device_info) &&
+        flag == I915_EXEC_RENDER)
+        batch->wa_render_bo = dri_bo_alloc(intel->bufmgr,
+                                           "wa scratch",
+                                           4096,
+                                           4096);
+    else
+        batch->wa_render_bo = NULL;
+
     intel_batchbuffer_reset(batch, buffer_size);
 
     return batch;
@@ -99,6 +109,7 @@ void intel_batchbuffer_free(struct intel_batchbuffer *batch)
     }
 
     dri_bo_unreference(batch->buffer);
+    dri_bo_unreference(batch->wa_render_bo);
     free(batch);
 }
 
@@ -172,27 +183,69 @@ intel_batchbuffer_emit_mi_flush(struct intel_batchbuffer *batch)
 {
     struct intel_driver_data *intel = batch->intel; 
 
-    if (IS_GEN6(intel->device_id) ||
-        IS_GEN7(intel->device_id)) {
+    if (IS_GEN6(intel->device_info) ||
+        IS_GEN7(intel->device_info) ||
+        IS_GEN8(intel->device_info)) {
         if (batch->flag == I915_EXEC_RENDER) {
-            BEGIN_BATCH(batch, 4);
-            OUT_BATCH(batch, CMD_PIPE_CONTROL | 0x2);
+            if (IS_GEN8(intel->device_info)) {
+                BEGIN_BATCH(batch, 6);
+                OUT_BATCH(batch, CMD_PIPE_CONTROL | (6 - 2));
 
-            if (IS_GEN6(intel->device_id))
-                OUT_BATCH(batch, 
+                OUT_BATCH(batch,
+                          CMD_PIPE_CONTROL_CS_STALL |
+                          CMD_PIPE_CONTROL_WC_FLUSH |
+                          CMD_PIPE_CONTROL_TC_FLUSH |
+                          CMD_PIPE_CONTROL_DC_FLUSH |
+                          CMD_PIPE_CONTROL_NOWRITE);
+                OUT_BATCH(batch, 0); /* write address */
+                OUT_BATCH(batch, 0);
+                OUT_BATCH(batch, 0); /* write data */
+                OUT_BATCH(batch, 0);
+                ADVANCE_BATCH(batch);
+            } else if (IS_GEN6(intel->device_info)) {
+                assert(batch->wa_render_bo);
+
+                BEGIN_BATCH(batch, 4 * 3);
+
+                OUT_BATCH(batch, CMD_PIPE_CONTROL | (4 - 2));
+                OUT_BATCH(batch,
+                          CMD_PIPE_CONTROL_CS_STALL |
+                          CMD_PIPE_CONTROL_STALL_AT_SCOREBOARD);
+                OUT_BATCH(batch, 0); /* address */
+                OUT_BATCH(batch, 0); /* write data */
+
+                OUT_BATCH(batch, CMD_PIPE_CONTROL | (4 - 2));
+                OUT_BATCH(batch, CMD_PIPE_CONTROL_WRITE_QWORD);
+                OUT_RELOC(batch,
+                          batch->wa_render_bo,
+                          I915_GEM_DOMAIN_INSTRUCTION,
+                          I915_GEM_DOMAIN_INSTRUCTION,
+                          0);
+                OUT_BATCH(batch, 0); /* write data */
+
+                /* now finally the _real flush */
+                OUT_BATCH(batch, CMD_PIPE_CONTROL | (4 - 2));
+                OUT_BATCH(batch,
                           CMD_PIPE_CONTROL_WC_FLUSH |
                           CMD_PIPE_CONTROL_TC_FLUSH |
                           CMD_PIPE_CONTROL_NOWRITE);
-            else
+                OUT_BATCH(batch, 0); /* write address */
+                OUT_BATCH(batch, 0); /* write data */
+                ADVANCE_BATCH(batch);
+            } else {
+                BEGIN_BATCH(batch, 4);
+                OUT_BATCH(batch, CMD_PIPE_CONTROL | (4 - 2));
+
                 OUT_BATCH(batch, 
                           CMD_PIPE_CONTROL_WC_FLUSH |
                           CMD_PIPE_CONTROL_TC_FLUSH |
                           CMD_PIPE_CONTROL_DC_FLUSH |
                           CMD_PIPE_CONTROL_NOWRITE);
+                OUT_BATCH(batch, 0); /* write address */
+                OUT_BATCH(batch, 0); /* write data */
+                ADVANCE_BATCH(batch);
+            }
 
-            OUT_BATCH(batch, 0);
-            OUT_BATCH(batch, 0);
-            ADVANCE_BATCH(batch);
         } else {
             if (batch->flag == I915_EXEC_BLT) {
                 BEGIN_BLT_BATCH(batch, 4);

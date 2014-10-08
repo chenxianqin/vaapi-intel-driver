@@ -40,8 +40,9 @@
 #include "i965_mutext.h"
 #include "object_heap.h"
 #include "intel_driver.h"
+#include "i965_fourcc.h"
 
-#define I965_MAX_PROFILES                       11
+#define I965_MAX_PROFILES                       20
 #define I965_MAX_ENTRYPOINTS                    5
 #define I965_MAX_CONFIG_ATTRIBUTES              10
 #define I965_MAX_IMAGE_FORMATS                  10
@@ -59,6 +60,16 @@
 #define I965_SURFACE_FLAG_TOP_FIELD_FIRST       0x00000001
 #define I965_SURFACE_FLAG_BOTTOME_FIELD_FIRST   0x00000002
 
+#define DEFAULT_BRIGHTNESS      0
+#define DEFAULT_CONTRAST        50
+#define DEFAULT_HUE             0
+#define DEFAULT_SATURATION      50
+
+#define ENCODER_QUALITY_RANGE     2
+#define ENCODER_DEFAULT_QUALITY   1
+#define ENCODER_HIGH_QUALITY      ENCODER_DEFAULT_QUALITY
+#define ENCODER_LOW_QUALITY       2
+
 struct i965_surface
 {
     struct object_base *base;
@@ -73,6 +84,7 @@ struct i965_kernel
     const uint32_t (*bin)[4];
     int size;
     dri_bo *bo;
+    unsigned int kernel_offset;
 };
 
 struct buffer_store
@@ -94,14 +106,20 @@ struct object_config
 
 #define NUM_SLICES     10
 
+struct codec_state_base {
+    uint32_t chroma_formats;
+};
+
 struct decode_state
 {
+    struct codec_state_base base;
     struct buffer_store *pic_param;
     struct buffer_store **slice_params;
     struct buffer_store *iq_matrix;
     struct buffer_store *bit_plane;
     struct buffer_store *huffman_table;
     struct buffer_store **slice_datas;
+    struct buffer_store *probability_data;
     VASurfaceID current_render_target;
     int max_slice_params;
     int max_slice_datas;
@@ -112,8 +130,12 @@ struct decode_state
     struct object_surface *reference_objects[16]; /* Up to 2 reference surfaces are valid for MPEG-2,*/
 };
 
+#define SLICE_PACKED_DATA_INDEX_TYPE    0x80000000
+#define SLICE_PACKED_DATA_INDEX_MASK    0x00FFFFFF
+
 struct encode_state
 {
+    struct codec_state_base base;
     struct buffer_store *seq_param;
     struct buffer_store *pic_param;
     struct buffer_store *pic_control;
@@ -131,9 +153,41 @@ struct encode_state
     struct buffer_store **slice_params_ext;
     int max_slice_params_ext;
     int num_slice_params_ext;
+
+    /* Check the user-configurable packed_header attribute.
+     * Currently it is mainly used to check whether the packed slice_header data
+     * is provided by user or the driver.
+     * TBD: It will check for the packed SPS/PPS/MISC/RAWDATA and so on.
+     */
+    unsigned int packed_header_flag;
+    /* For the packed data that needs to be inserted into video clip */
+    /* currently it is mainly to track packed raw data and packed slice_header data. */
+    struct buffer_store **packed_header_params_ext;
+    int max_packed_header_params_ext;
+    int num_packed_header_params_ext;
+    struct buffer_store **packed_header_data_ext;
+    int max_packed_header_data_ext;
+    int num_packed_header_data_ext;
+
+    /* the index of current slice */
+    int slice_index;
+    /* the array is determined by max_slice_params_ext */
+    int max_slice_num;
+    /* This is to store the first index of packed data for one slice */
+    int *slice_rawdata_index;
+    /* This is to store the number of packed data for one slice.
+     * Both packed rawdata and slice_header data are tracked by this
+     * this variable. That is to say: When one packed slice_header is parsed,
+     * this variable will also be increased.
+     */
+    int *slice_rawdata_count;
+
+    /* This is to store the index of packed slice header for one slice */
+    int *slice_header_index;
+
     int last_packed_header_type;
 
-    struct buffer_store *misc_param[8];
+    struct buffer_store *misc_param[16];
 
     VASurfaceID current_render_target;
     struct object_surface *input_yuv_object;
@@ -144,6 +198,7 @@ struct encode_state
 
 struct proc_state
 {
+    struct codec_state_base base;
     struct buffer_store *pipeline_param;
 
     VASurfaceID current_render_target;
@@ -155,6 +210,7 @@ struct proc_state
 
 union codec_state
 {
+    struct codec_state_base base;
     struct decode_state decode;
     struct encode_state encode;
     struct proc_state proc;
@@ -186,12 +242,8 @@ struct object_context
 };
 
 #define SURFACE_REFERENCED      (1 << 0)
-#define SURFACE_DISPLAYED       (1 << 1)
 #define SURFACE_DERIVED         (1 << 2)
-#define SURFACE_REF_DIS_MASK    ((SURFACE_REFERENCED) | \
-                                 (SURFACE_DISPLAYED))
 #define SURFACE_ALL_MASK        ((SURFACE_REFERENCED) | \
-                                 (SURFACE_DISPLAYED) |  \
                                  (SURFACE_DERIVED))
 
 struct object_surface 
@@ -202,15 +254,16 @@ struct object_surface
     struct object_subpic *obj_subpic[I965_MAX_SUBPIC_SUM];
     unsigned int subpic_render_idx;
 
-    int width;
-    int height;
+    int width;          /* the pitch of plane 0 in bytes in horizontal direction */
+    int height;         /* the pitch of plane 0 in bytes in vertical direction */
     int size;
-    int orig_width;
-    int orig_height;
+    int orig_width;     /* the width of plane 0 in pixels */
+    int orig_height;    /* the height of plane 0 in pixels */
     int flags;
     unsigned int fourcc;    
     dri_bo *bo;
     VAImageID locked_image_id;
+    VAImageID derived_image_id;
     void (*free_private_data)(void **data);
     void *private_data;
     unsigned int subsampling;
@@ -221,6 +274,10 @@ struct object_surface
     int cb_cr_width;
     int cb_cr_height;
     int cb_cr_pitch;
+    /* user specified attributes see: VASurfaceAttribExternalBuffers/VA_SURFACE_ATTRIB_MEM_TYPE_VA */
+    uint32_t user_disable_tiling : 1;
+    uint32_t user_h_stride_set   : 1;
+    uint32_t user_v_stride_set   : 1;
 };
 
 struct object_buffer 
@@ -231,6 +288,10 @@ struct object_buffer
     int num_elements;
     int size_element;
     VABufferType type;
+
+    /* Export state */
+    unsigned int export_refcount;
+    VABufferInfo export_state;
 };
 
 struct object_image 
@@ -258,13 +319,34 @@ struct object_subpic
     unsigned int flags;
 };
 
+#define I965_RING_NULL  0
+#define I965_RING_BSD   1
+#define I965_RING_BLT   2
+#define I965_RING_VEBOX 3
+
+struct i965_filter
+{
+    VAProcFilterType type;
+    int ring;
+};
+
 struct hw_codec_info
 {
     struct hw_context *(*dec_hw_context_init)(VADriverContextP, struct object_config *);
     struct hw_context *(*enc_hw_context_init)(VADriverContextP, struct object_config *);
     struct hw_context *(*proc_hw_context_init)(VADriverContextP, struct object_config *);
+    bool (*render_init)(VADriverContextP);
+    void (*post_processing_context_init)(VADriverContextP, void *, struct intel_batchbuffer *);
+    void (*preinit_hw_codec)(VADriverContextP, struct hw_codec_info *);
+
     int max_width;
     int max_height;
+    int min_linear_wpitch;
+    int min_linear_hpitch;
+
+    unsigned int h264_mvc_dec_profiles;
+    unsigned int h264_dec_chroma_formats;
+    unsigned int jpeg_dec_chroma_formats;
 
     unsigned int has_mpeg2_decoding:1;
     unsigned int has_mpeg2_encoding:1;
@@ -280,9 +362,12 @@ struct hw_codec_info
     unsigned int has_tiled_surface:1;
     unsigned int has_di_motion_adptive:1;
     unsigned int has_di_motion_compensated:1;
+    unsigned int has_vp8_decoding:1;
+    unsigned int has_vp8_encoding:1;
+    unsigned int has_h264_mvc_encoding:1;
 
     unsigned int num_filters;
-    VAProcFilterType filters[VAProcFilterCount];
+    struct i965_filter filters[VAProcFilterCount];
 };
 
 
@@ -302,6 +387,7 @@ struct i965_driver_data
     _I965Mutex render_mutex;
     _I965Mutex pp_mutex;
     struct intel_batchbuffer *batch;
+    struct intel_batchbuffer *pp_batch;
     struct i965_render_state render_state;
     void *pp_context;
     char va_vendor[256];
@@ -309,6 +395,10 @@ struct i965_driver_data
     VADisplayAttribute *display_attributes;
     unsigned int num_display_attributes;
     VADisplayAttribute *rotation_attrib;
+    VADisplayAttribute *brightness_attrib;
+    VADisplayAttribute *contrast_attrib;
+    VADisplayAttribute *hue_attrib;
+    VADisplayAttribute *saturation_attrib;
     VAContextID current_context_id;
 
     /* VA/DRI (X11) specific data */
@@ -344,7 +434,7 @@ i965_driver_data(VADriverContextP ctx)
     return (struct i965_driver_data *)(ctx->pDriverData);
 }
 
-void 
+VAStatus
 i965_check_alloc_surface_bo(VADriverContextP ctx,
                             struct object_surface *obj_surface,
                             int tiled,
@@ -355,8 +445,9 @@ int
 va_enc_packed_type_to_idx(int packed_type);
 
 /* reserve 2 byte for internal using */
-#define CODED_H264      0
-#define CODED_MPEG2     1
+#define CODEC_H264      0
+#define CODEC_MPEG2     1
+#define CODEC_H264_MVC  2
 
 #define H264_DELIMITER0 0x00
 #define H264_DELIMITER1 0x00
@@ -385,8 +476,22 @@ extern VAStatus i965_MapBuffer(VADriverContextP ctx,
 
 extern VAStatus i965_UnmapBuffer(VADriverContextP ctx, VABufferID buf_id);
 
+extern VAStatus i965_DestroySurfaces(VADriverContextP ctx,
+                     VASurfaceID *surface_list,
+                     int num_surfaces);
+
+extern VAStatus i965_CreateSurfaces(VADriverContextP ctx,
+                    int width,
+                    int height,
+                    int format,
+                    int num_surfaces,
+                    VASurfaceID *surfaces);
+
 #define I965_SURFACE_MEM_NATIVE             0
 #define I965_SURFACE_MEM_GEM_FLINK          1
 #define I965_SURFACE_MEM_DRM_PRIME          2
+
+void
+i965_destroy_surface_storage(struct object_surface *obj_surface);
 
 #endif /* _I965_DRV_VIDEO_H_ */

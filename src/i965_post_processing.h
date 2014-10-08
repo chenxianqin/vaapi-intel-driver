@@ -51,6 +51,7 @@ enum
     PP_PL3_LOAD_SAVE_PA,
     PP_PA_LOAD_SAVE_NV12,
     PP_PA_LOAD_SAVE_PL3,
+    PP_PA_LOAD_SAVE_PA,
     PP_RGBX_LOAD_SAVE_NV12,
     PP_NV12_LOAD_SAVE_RGBX,
     NUM_PP_MODULES,
@@ -93,12 +94,17 @@ struct pp_dndi_context
 {
     int dest_w;
     int dest_h;
+    dri_bo *stmm_bo;
+    int frame_order; /* -1 for the first frame */
+    VASurfaceID current_out_surface;
+    struct object_surface *current_out_obj_surface;
 };
 
 struct pp_dn_context
 {
     int dest_w;
     int dest_h;
+    dri_bo *stmm_bo;
 };
 
 struct i965_post_processing_context;
@@ -374,7 +380,7 @@ struct gen7_pp_static_parameter
         unsigned int di_destination_packed_y_component_offset:8;
         unsigned int di_destination_packed_u_component_offset:8;
         unsigned int di_destination_packed_v_component_offset:8;
-        unsigned int pad0:8;
+        unsigned int alpha:8;
     } grf2;
 
     struct {
@@ -472,16 +478,21 @@ struct i965_post_processing_context
     } urb;
 
     struct {
-        dri_bo *bo;
-    } stmm;
+        unsigned int gpgpu_mode : 1;
+        unsigned int pad0 : 7;
+        unsigned int max_num_threads : 16;
+        unsigned int num_urb_entries : 8;
+        unsigned int urb_entry_size : 16;
+        unsigned int curbe_allocation_size : 16;
+    } vfe_gpu_state;
 
-    union {
-        struct pp_load_save_context pp_load_save_context;
-        struct pp_scaling_context pp_scaling_context;
-        struct pp_avs_context pp_avs_context;
-        struct pp_dndi_context pp_dndi_context;
-        struct pp_dn_context pp_dn_context;
-    } private_context;
+    struct pp_load_save_context pp_load_save_context;
+    struct pp_scaling_context pp_scaling_context;
+    struct pp_avs_context pp_avs_context;
+    struct pp_dndi_context pp_dndi_context;
+    struct pp_dn_context pp_dn_context;
+    void *private_context; /* pointer to the current private context */
+    void *pipeline_param;  /* pointer to the pipeline parameter */
 
     int (*pp_x_steps)(void *private_context);
     int (*pp_y_steps)(void *private_context);
@@ -492,6 +503,39 @@ struct i965_post_processing_context
     unsigned int block_horizontal_mask_left:16;
     unsigned int block_horizontal_mask_right:16;
     unsigned int block_vertical_mask_bottom:8;
+
+    struct {
+        dri_bo *bo;
+        int bo_size;
+        unsigned int end_offset;
+    } instruction_state;
+
+    struct {
+        dri_bo *bo;
+    } indirect_state;
+
+    struct {
+        dri_bo *bo;
+        int bo_size;
+        unsigned int end_offset;
+    } dynamic_state;
+
+    unsigned int sampler_offset;
+    int sampler_size;
+    unsigned int idrt_offset;
+    int idrt_size;
+    unsigned int curbe_offset;
+    int curbe_size;
+
+    VAStatus (*intel_post_processing)(VADriverContextP   ctx,
+				struct i965_post_processing_context *pp_context,
+				const struct i965_surface *src_surface,
+				const VARectangle *src_rect,
+				struct i965_surface *dst_surface,
+				const VARectangle *dst_rect,
+				int   pp_index,
+				void * filter_param);
+    void (*finalize)(struct i965_post_processing_context *pp_context);
 };
 
 struct i965_proc_context
@@ -531,5 +575,12 @@ void
 i965_post_processing_terminate(VADriverContextP ctx);
 bool
 i965_post_processing_init(VADriverContextP ctx);
+
+
+extern VAStatus
+i965_proc_picture(VADriverContextP ctx,
+                  VAProfile profile,
+                  union codec_state *codec_state,
+                  struct hw_context *hw_context);
 
 #endif /* __I965_POST_PROCESSING_H__ */

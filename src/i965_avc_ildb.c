@@ -342,7 +342,7 @@ i965_avc_ildb_upload_constants(VADriverContextP ctx,
     assert(avc_ildb_context->curbe.bo->virtual);
     root_input = avc_ildb_context->curbe.bo->virtual;
 
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         root_input->max_concurrent_threads = 76; /* 72 - 2 + 8 - 2 */
     } else {
         root_input->max_concurrent_threads = 54; /* 50 - 2 + 8 - 2 */
@@ -410,7 +410,7 @@ i965_avc_ildb_urb_layout(VADriverContextP ctx, struct i965_h264_context *i965_h2
     unsigned int vfe_fence, cs_fence;
 
     vfe_fence = avc_ildb_context->urb.cs_start;
-    cs_fence = URB_SIZE((&i965->intel));
+    cs_fence = i965->intel.device_info->urb_size;
 
     BEGIN_BATCH(batch, 3);
     OUT_BATCH(batch, CMD_URB_FENCE | UF0_VFE_REALLOC | UF0_CS_REALLOC | 1);
@@ -427,7 +427,7 @@ i965_avc_ildb_state_base_address(VADriverContextP ctx, struct i965_h264_context 
     struct i965_driver_data *i965 = i965_driver_data(ctx); 
     struct intel_batchbuffer *batch = i965_h264_context->batch;
 
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         BEGIN_BATCH(batch, 8);
         OUT_BATCH(batch, CMD_STATE_BASE_ADDRESS | 6);
         OUT_BATCH(batch, 0 | BASE_ADDRESS_MODIFY);
@@ -596,8 +596,8 @@ i965_avc_ildb_decode_init(VADriverContextP ctx, void *h264_context)
     avc_ildb_context->urb.vfe_start = 0;
     avc_ildb_context->urb.cs_start = avc_ildb_context->urb.vfe_start + 
         avc_ildb_context->urb.num_vfe_entries * avc_ildb_context->urb.size_vfe_entry;
-  //  assert(avc_ildb_context->urb.cs_start + 
-  //         avc_ildb_context->urb.num_cs_entries * avc_ildb_context->urb.size_cs_entry <= URB_SIZE((&i965->intel)));
+    // assert(avc_ildb_context->urb.cs_start + 
+    // avc_ildb_context->urb.num_cs_entries * avc_ildb_context->urb.size_cs_entry <= i965->intel.device_info->urb_size);
 
     for (i = 0; i < NUM_AVC_ILDB_SURFACES; i++) {
         dri_bo_unreference(avc_ildb_context->surface[i].s_bo);
@@ -614,7 +614,7 @@ i965_avc_ildb_decode_init(VADriverContextP ctx, void *h264_context)
     /* kernel offset */
     assert(NUM_AVC_ILDB_INTERFACES == ARRAY_ELEMS(avc_ildb_kernel_offset_gen5));
 
-    if (IS_IRONLAKE(i965->intel.device_id)) {
+    if (IS_IRONLAKE(i965->intel.device_info)) {
         avc_ildb_kernel_offset = avc_ildb_kernel_offset_gen5;
     } else {
         avc_ildb_kernel_offset = avc_ildb_kernel_offset_gen4;
